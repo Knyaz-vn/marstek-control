@@ -100,6 +100,12 @@ button.btn:disabled{opacity:.5}
 .tile{background:var(--panel2);border-radius:12px;padding:10px 12px;min-width:0}
 .tile .k{font-size:12px;color:var(--muted)}
 .tile .v{font-size:20px;font-weight:680;letter-spacing:-.02em;margin-top:2px;white-space:nowrap}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}
+@media (min-width:760px){.stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (min-width:1000px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.stats .tile .v{font-size:19px}
+.tabs{flex-wrap:wrap}
+.linkbtn{background:none;border:0;color:var(--accent);font:inherit;font-size:13px;font-weight:600;padding:8px 0 0;cursor:pointer}
 .tile .v small{font-size:12px;font-weight:550;color:var(--muted);letter-spacing:0}
 .tile .s{font-size:12px;color:var(--muted);margin-top:2px}
 @media (max-width:420px){.tile .v{font-size:17px}}
@@ -233,7 +239,7 @@ footer{color:var(--faint);font-size:12px;margin-top:18px;text-align:center}
 
   <section class="card">
     <div class="row"><h2 style="margin:0">Історія</h2><span class="spacer"></span>
-      <div class="tabs" id="rangeTabs"><button data-h="1">1 год</button><button data-h="6" class="act">6 год</button><button data-h="24">24 год</button></div>
+      <div class="tabs" id="rangeTabs"><button data-h="1">1 год</button><button data-h="6" class="act">6 год</button><button data-h="24">24 год</button><button data-h="168">7 днів</button><button data-h="720">30 днів</button><button data-h="0">Усе</button></div>
     </div>
     <div class="clabel"><span><i style="background:var(--green)"></i>Заряд, %</span></div>
     <div class="chart"><canvas id="cSoc"></canvas></div>
@@ -241,16 +247,30 @@ footer{color:var(--faint);font-size:12px;margin-top:18px;text-align:center}
     <div class="chart tall"><canvas id="cPow"></canvas></div>
     <div class="clabel"><span><i style="background:var(--orange)"></i>Температура, °C</span><span><i style="background:var(--red);height:1px"></i>поріг уваги</span></div>
     <div class="chart"><canvas id="cTemp"></canvas></div>
+    <div class="hint" id="histHint"></div>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2 style="margin:0">Статистика</h2><span class="spacer"></span>
+      <div class="tabs" id="statTabs"><button data-d="1" class="act">Сьогодні</button><button data-d="7">7 днів</button><button data-d="30">30 днів</button><button data-d="0">Усе</button></div>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="clabel"><span><i style="background:var(--blue)"></i>Середнє навантаження за годиною доби, Вт</span></div>
+    <div class="chart"><canvas id="cProf"></canvas></div>
+    <div class="tablewrap" style="margin-top:14px"><table class="num"><thead><tr><th id="dayHead">День</th><th class="r">Спожито</th><th class="r">З мережі</th><th class="r">Вартість</th><th class="r">Без світла</th><th class="r">t° макс</th></tr></thead><tbody id="dayTable"></tbody></table></div>
+    <div class="row" style="margin-top:12px"><button class="btn" id="csvBtn">Експорт у CSV</button><span class="hint" id="archInfo" style="margin:0"></span></div>
   </section>
 
   <section class="grid g2">
     <div class="card">
       <h2>Відключення</h2>
       <div class="tablewrap"><table class="num"><thead><tr><th>Початок</th><th>Кінець</th><th class="r">Тривалість</th><th class="r">Вт·год</th><th class="r">Заряд</th></tr></thead><tbody id="outTable"></tbody></table></div>
+      <button class="linkbtn hidden" id="outMore"></button>
     </div>
     <div class="card">
-      <h2>Сповіщення</h2>
+      <h2>Журнал подій</h2>
       <div class="alerts" id="alerts"></div>
+      <button class="linkbtn hidden" id="alertsMore"></button>
     </div>
   </section>
 
@@ -270,6 +290,8 @@ footer{color:var(--faint);font-size:12px;margin-top:18px;text-align:center}
         <label>Температура: критично, °C<input type="number" inputmode="numeric" name="temp_crit" min="35" max="65"></label>
         <label>Температура: низька, °C<input type="number" inputmode="numeric" name="temp_low" min="-10" max="15"></label>
         <label>Сповіщення при заряді нижче, %<input type="number" inputmode="numeric" name="low_soc_alert" min="5" max="60"></label>
+        <label>Ціна вдень, грн/кВт·год<input type="number" inputmode="decimal" name="price_day" min="0" max="100" step="0.01"></label>
+        <label>Ціна вночі, грн/кВт·год<input type="number" inputmode="decimal" name="price_night" min="0" max="100" step="0.01"></label>
         <label>Режим утримання<select name="hold_mode"><option value="passive0">Пасивний 0 Вт</option><option value="auto">Auto</option><option value="ups">UPS</option></select></label>
       </div>
       <div class="row" style="margin-top:14px"><button class="btn primary" id="saveBtn">Зберегти</button><span class="spacer"></span><button class="btn" id="logoutBtn">Відключити цей пристрій</button></div>
@@ -510,6 +532,7 @@ function render(){
 
   renderSchedule();
   renderCharts();
+  renderStats();
   renderOutages();
   renderAlerts();
   if (!formDirty) fillForm();
@@ -551,51 +574,197 @@ function makeChart(id, datasets, yopts){
     type: "line",
     data: {datasets},
     options: {
-      animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
-      interaction: {mode: "index", intersect: false},
-      plugins: {legend: {display: false}, tooltip: {callbacks: {title: it => it.length ? hm(it[0].parsed.x / 1000) : ""}}},
+      animation: false, responsive: true, maintainAspectRatio: false, parsing: false,
+      interaction: {mode: "nearest", axis: "x", intersect: false},
+      plugins: {legend: {display: false}, tooltip: {callbacks: {title: it => it.length ? tsLabel(it[0].parsed.x / 1000) : ""}}},
       elements: {point: {radius: 0, hitRadius: 6}, line: {borderWidth: 2, tension: .25}},
       scales: {
-        x: {type: "linear", grid: {color: grid}, border: {display: false}, ticks: {color: tick, maxTicksLimit: 7, callback: v => hm(v / 1000)}},
+        x: {type: "linear", grid: {color: grid}, border: {display: false}, ticks: {color: tick, maxTicksLimit: 7, callback: v => tickLabel(v / 1000)}},
         y: Object.assign({grid: {color: grid}, border: {display: false}, ticks: {color: tick, maxTicksLimit: 5}}, yopts || {}),
       },
     },
   });
 }
+let longRange = false;
+function tsLabel(ts){ return longRange ? `${dm(ts)} ${hm(ts)}` : hm(ts); }
+function tickLabel(ts){ return longRange ? dm(ts) : hm(ts); }
+function hourW(h, key){ const on = h.on || 0; return on > 0 && h[key] != null ? h[key] * 60 / on : null; }
 function renderCharts(){
-  if (typeof Chart === "undefined") return;
-  const pts = histSince(rangeH * 3600);
-  const xmin = (now() - rangeH * 3600) * 1000, xmax = now() * 1000;
-  const ser = i => pts.filter(p => p[i] != null).map(p => ({x: p[0] * 1000, y: p[i]}));
+  if (typeof Chart === "undefined" || !S) return;
+  longRange = rangeH === 0 || rangeH > 24;
+  let soc, load, bat, temp, xmin, xmax = now() * 1000;
+  if (!longRange) {
+    const pts = histSince(rangeH * 3600).slice().sort((a, b) => a[0] - b[0]);
+    const ser = i => pts.filter(p => p[i] != null).map(p => ({x: p[0] * 1000, y: p[i]}));
+    soc = ser(1); load = ser(3); bat = ser(2); temp = ser(4);
+    xmin = (now() - rangeH * 3600) * 1000;
+    $("histHint").textContent = "";
+  } else {
+    if (!ARCH) { loadArchive(); $("histHint").textContent = "Завантажую архів..."; }
+    const from = rangeH ? now() - rangeH * 3600 : 0;
+    const hs = allHours().filter(h => h.t >= from);
+    const ser = f => hs.map(h => ({x: (h.t + 1800) * 1000, y: f(h)})).filter(p => p.y != null && !isNaN(p.y));
+    soc = ser(h => h.soc); load = ser(h => hourW(h, "load")); temp = ser(h => h.tmax);
+    bat = ser(h => { const c = hourW(h, "chg"), d = hourW(h, "dis"); return c == null ? null : c - (d || 0); });
+    xmin = rangeH ? from * 1000 : (hs.length ? hs[0].t * 1000 : xmax - 86400000);
+    if (ARCH) $("histHint").textContent = hs.length ? "Погодинні дані: середнє за годину, температура максимальна за годину." : "Архів ще порожній: перші погодинні дані з'являться через годину роботи агента.";
+  }
   if (!charts.soc) {
     charts.soc = makeChart("cSoc", [{data: [], borderColor: css("--green"), backgroundColor: css("--green-soft"), fill: true}], {min: 0, max: 100});
     charts.pow = makeChart("cPow", [{data: [], borderColor: css("--blue")}, {data: [], borderColor: css("--violet")}]);
     charts.temp = makeChart("cTemp", [{data: [], borderColor: css("--orange")}, {data: [], borderColor: css("--red"), borderDash: [4, 4], borderWidth: 1}]);
   }
-  charts.soc.data.datasets[0].data = ser(1);
-  charts.pow.data.datasets[0].data = ser(3);
-  charts.pow.data.datasets[1].data = ser(2);
+  charts.soc.data.datasets[0].data = soc;
+  charts.pow.data.datasets[0].data = load;
+  charts.pow.data.datasets[1].data = bat;
   const tw = S.settings.temp_warn;
-  charts.temp.data.datasets[0].data = ser(4);
+  charts.temp.data.datasets[0].data = temp;
   charts.temp.data.datasets[1].data = [{x: xmin, y: tw}, {x: xmax, y: tw}];
-  const tv = ser(4).map(p => p.y);
+  const tv = temp.map(p => p.y);
   charts.temp.options.scales.y.suggestedMin = tv.length ? Math.min(...tv) - 3 : 15;
   charts.temp.options.scales.y.suggestedMax = Math.max(tw + 2, tv.length ? Math.max(...tv) + 3 : 35);
   for (const c of [charts.soc, charts.pow, charts.temp]) { c.options.scales.x.min = xmin; c.options.scales.x.max = xmax; c.update("none"); }
 }
 
+// ---------- архів і статистика ----------
+let ARCH = null, archTs = 0, archBusy = false, statDays = Number(LS.get("statDays") || 1), showAllOut = false, showAllEv = false;
+async function loadArchive(force){
+  if (!S || !S.archive_gist || archBusy) return;
+  if (!force && ARCH && now() - archTs < 600) return;
+  archBusy = true;
+  try {
+    const g = await gh("GET", "/gists/" + S.archive_gist);
+    const hours = new Map(); let outages = [], events = [];
+    for (const [name, f] of Object.entries(g.files || {})) {
+      let body = {};
+      try {
+        let text = f.content;
+        if (f.truncated && f.raw_url) text = await (await fetch(f.raw_url, {cache: "no-store"})).text();
+        body = JSON.parse(text || "{}");
+      } catch (e) { continue; }
+      if (name === "events.json") { outages = body.outages || []; events = body.events || []; }
+      else if (/^\d{4}-\d{2}\.json$/.test(name)) for (const h of body.hours || []) hours.set(h.t, h);
+    }
+    ARCH = {hours: [...hours.values()].sort((a, b) => a.t - b.t), outages: outages.sort((a, b) => a.start - b.start), events};
+    archTs = now();
+    renderCharts(); renderStats(); renderOutages(); renderAlerts();
+  } catch (e) { $("archInfo").textContent = "Архів недоступний: " + e.message; }
+  finally { archBusy = false; }
+}
+function allHours(){
+  const hs = ARCH ? ARCH.hours.slice() : [];
+  const cur = S && S.hour_now;
+  if (cur && !hs.some(h => h.t === cur.t)) hs.push(cur);
+  return hs;
+}
+function isNightHour(h){
+  const st = S.settings || {}; const toM = v => { const [a, b] = String(v || "0:0").split(":").map(Number); return a * 60 + (b || 0); };
+  const a = toM(st.night_start || "23:00"), b = toM(st.night_end || "07:00"), m = new Date(h.t * 1000).getHours() * 60 + 30;
+  return a > b ? (m >= a || m < b) : (m >= a && m < b);
+}
+const kwh = wh => (wh / 1000).toLocaleString("uk-UA", {maximumFractionDigits: wh < 10000 ? 2 : 1});
+const uah = v => v.toLocaleString("uk-UA", {maximumFractionDigits: v < 100 ? 2 : 0});
+const hhmm = min => { min = Math.round(min || 0); return `${Math.floor(min / 60)}:${pad(min % 60)}`; };
+function periodFrom(d){ if (d === 1) { const x = new Date(); x.setHours(0, 0, 0, 0); return x.getTime() / 1000; } return d ? now() - d * 86400 : 0; }
+function renderStats(){
+  if (!S) return;
+  if (!ARCH) { if (S.archive_gist) loadArchive(); else { $("stats").innerHTML = `<div class="hint">Статистика з'явиться після оновлення агента (sh update.sh).</div>`; return; } }
+  const from = periodFrom(statDays);
+  const hs = allHours().filter(h => h.t >= from - 3599);
+  const pd = Number(S.settings.price_day ?? 4.32), pn = Number(S.settings.price_night ?? 2.16);
+  let load = 0, gin = 0, ginN = 0, cost = 0, dis = 0, out = 0, hi = 0, on = 0, tmin = null, tmax = null;
+  for (const h of hs) {
+    load += h.load || 0; dis += h.dis || 0; out += h.out || 0; hi += h.hi90 || 0; on += h.on || 0;
+    const g = h.gin || 0; gin += g; const night = isNightHour(h); if (night) ginN += g; cost += g / 1000 * (night ? pn : pd);
+    if (h.tmin != null) tmin = tmin == null ? h.tmin : Math.min(tmin, h.tmin);
+    if (h.tmax != null) tmax = tmax == null ? h.tmax : Math.max(tmax, h.tmax);
+  }
+  const outs = (ARCH ? ARCH.outages : S.outages || []).filter(o => o.start >= from);
+  const outDur = outs.reduce((a, o) => a + (o.end - o.start), 0), longest = outs.reduce((a, o) => Math.max(a, o.end - o.start), 0);
+  const outWh = outs.reduce((a, o) => a + (o.wh || 0), 0);
+  const offline = (ARCH ? ARCH.events : []).filter(e => e.kind === "offline" && e.ts >= from).length;
+  const lastR = [...(ARCH ? ARCH.hours : [])].reverse().find(h => h.rmax != null);
+  const capPct = lastR ? Math.round(lastR.rmax / S.capacity_wh * 1000) / 10 : null;
+  const avgW = on > 0 ? load * 60 / on : null;
+  const tiles = [
+    ["Спожито", `${kwh(load)}<small> кВт·год</small>`, avgW != null ? `у середньому ${fmtW(avgW)} Вт` : "&nbsp;"],
+    ["Заряд з мережі", `${kwh(gin)}<small> кВт·год</small>`, gin ? `уночі ${Math.round(ginN / gin * 100)}%` : "заряду не було"],
+    ["Вартість заряду", `${uah(cost)}<small> грн</small>`, `нічний тариф зекономив ${uah(ginN / 1000 * (pd - pn))} грн`],
+    ["Відключення", `${outs.length}<small> шт</small>`, outs.length ? `разом ${hhmm(outDur / 60)}, найдовше ${hhmm(longest / 60)}` : "не було"],
+    ["Віддано батареєю", `${kwh(dis)}<small> кВт·год</small>`, `≈ ${(dis / S.capacity_wh).toLocaleString("uk-UA", {maximumFractionDigits: 2})} повного циклу` + (outWh ? `, за відключення ${kwh(outWh)} кВт·год` : "")],
+    ["Заряд від 90%", on ? `${Math.round(hi / on * 100)}<small>% часу</small>` : "-", "менше означає повільніше старіння"],
+    ["Температура", tmin != null ? `${Math.round(tmin)}…${Math.round(tmax)}<small> °C</small>` : "-", `увага від ${S.settings.temp_warn} °C`],
+    ["Втрати зв'язку", `${offline}`, offline ? "можливі перезавантаження станції" : "станція відповідала стабільно"],
+    ["Ємність при 100%", lastR ? `${fmtW(lastR.rmax)}<small> Вт·год</small>` : "-", capPct != null ? `${capPct.toLocaleString("uk-UA")}% від паспортних ${fmtW(S.capacity_wh)}` : "з'явиться після повного заряду"],
+  ];
+  $("stats").innerHTML = tiles.map(([k, v, s2]) => `<div class="tile"><div class="k">${k}</div><div class="v num">${v}</div><div class="s">${s2}</div></div>`).join("");
+  // профіль навантаження
+  const sum = Array(24).fill(0), cnt = Array(24).fill(0);
+  for (const h of hs) { const w = hourW(h, "load"); if (w != null) { const i = new Date(h.t * 1000).getHours(); sum[i] += w; cnt[i]++; } }
+  const prof = sum.map((v, i) => cnt[i] ? Math.round(v / cnt[i]) : null);
+  const fallback = !prof.some(v => v != null) && S.profile ? S.profile : null;
+  if (typeof Chart !== "undefined") {
+    const data = (fallback || prof).map((v, i) => ({x: i, y: v}));
+    if (!charts.prof) {
+      charts.prof = new Chart($("cProf"), {type: "bar", data: {labels: [...Array(24).keys()].map(pad), datasets: [{data: (fallback || prof), backgroundColor: css("--blue"), borderRadius: 3}]},
+        options: {animation: false, responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}, tooltip: {callbacks: {title: it => `${it[0].label}:00`, label: it => `${it.raw ?? "-"} Вт`}}},
+          scales: {x: {grid: {display: false}, ticks: {color: css("--faint"), maxTicksLimit: 12}}, y: {grid: {color: css("--line")}, border: {display: false}, ticks: {color: css("--faint"), maxTicksLimit: 4}}}}});
+    } else { charts.prof.data.datasets[0].data = fallback || prof; charts.prof.update("none"); }
+  }
+  // таблиця по днях або місяцях
+  const byMonth = statDays === 0;
+  $("dayHead").textContent = byMonth ? "Місяць" : "День";
+  const groups = new Map();
+  for (const h of hs) {
+    const d = new Date(h.t * 1000);
+    const key = byMonth ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}` : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const g = groups.get(key) || {label: byMonth ? `${pad(d.getMonth() + 1)}.${d.getFullYear()}` : `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`, load: 0, gin: 0, cost: 0, out: 0, tmax: null};
+    g.load += h.load || 0; g.gin += h.gin || 0; g.cost += (h.gin || 0) / 1000 * (isNightHour(h) ? pn : pd); g.out += h.out || 0;
+    if (h.tmax != null) g.tmax = g.tmax == null ? h.tmax : Math.max(g.tmax, h.tmax);
+    groups.set(key, g);
+  }
+  const rows = [...groups.entries()].sort((a, b) => b[0] < a[0] ? -1 : 1).slice(0, 31);
+  $("dayTable").innerHTML = rows.map(([, g]) => `<tr><td>${g.label}</td><td class="r">${kwh(g.load)}</td><td class="r">${kwh(g.gin)}</td><td class="r">${uah(g.cost)}</td><td class="r">${g.out ? hhmm(g.out) : "-"}</td><td class="r">${g.tmax != null ? Math.round(g.tmax) + "°" : "-"}</td></tr>`).join("")
+    || `<tr><td colspan="6" style="color:var(--muted)">Даних за цей період ще немає</td></tr>`;
+  const first = ARCH && ARCH.hours.length ? ARCH.hours[0].t : null;
+  $("archInfo").textContent = first ? `Архів з ${dm(first)}.${new Date(first * 1000).getFullYear()}, ${ARCH.hours.length} год даних. Енергія в кВт·год.` : "Енергія в кВт·год.";
+}
+function exportCsv(){
+  const hs = allHours();
+  if (!hs.length) { toast("Архів ще порожній"); return; }
+  const cols = [["t", "Час"], ["soc", "Заряд, %"], ["smin", "Заряд мін, %"], ["smax", "Заряд макс, %"], ["load", "Спожито, Вт·год"], ["lmax", "Навантаження макс, Вт"],
+    ["gin", "З мережі, Вт·год"], ["gout", "В мережу, Вт·год"], ["chg", "Заряджено, Вт·год"], ["dis", "Розряджено, Вт·год"], ["tmin", "t мін, °C"], ["tmax", "t макс, °C"],
+    ["tavg", "t середня, °C"], ["out", "Без світла, хв"], ["on", "На зв'язку, хв"], ["hi90", "Заряд від 90%, хв"]];
+  const fmtT = ts => { const d = new Date(ts * 1000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00`; };
+  const lines = [cols.map(c => c[1]).join(";")].concat(hs.map(h => cols.map(([k]) => k === "t" ? fmtT(h.t) : (h[k] ?? "")).join(";").replace(/\./g, ",")));
+  const blob = new Blob(["﻿" + lines.join("\n")], {type: "text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `marstek-${fmtT(now()).slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
 function renderOutages(){
-  const rows = (S.outages || []).slice().reverse().slice(0, 12);
+  const all = (ARCH && ARCH.outages.length ? ARCH.outages : (S.outages || [])).slice().reverse();
+  const rows = showAllOut ? all : all.slice(0, 12);
   const live = S.outage ? `<tr><td>${dm(S.outage.start)} ${hm(S.outage.start)}</td><td>триває</td><td class="r">${dur(now() - S.outage.start)}</td><td class="r">${fmtW(S.outage.wh)}</td><td class="r">${Math.round(S.outage.soc_start)}% → ${Math.round(S.soc)}%</td></tr>` : "";
-  $("outTable").innerHTML = live + rows.map(o => `<tr><td>${dm(o.start)} ${hm(o.start)}</td><td>${hm(o.end)}</td><td class="r">${dur(o.end - o.start)}</td><td class="r">${fmtW(o.wh)}</td><td class="r">${Math.round(o.soc_start)}% → ${Math.round(o.soc_end)}%</td></tr>`).join("")
+  $("outTable").innerHTML = live + rows.map(o => `<tr><td>${dm(o.start)} ${hm(o.start)}</td><td>${hm(o.end)}</td><td class="r">${dur(o.end - o.start)}</td><td class="r">${fmtW(o.wh)}</td><td class="r">${Math.round(o.soc_start ?? 0)}% → ${Math.round(o.soc_end ?? 0)}%</td></tr>`).join("")
     || `<tr><td colspan="5" style="color:var(--muted)">Агент ще не зафіксував жодного відключення</td></tr>`;
+  const more = $("outMore");
+  more.classList.toggle("hidden", all.length <= 12);
+  more.textContent = showAllOut ? "Згорнути" : `Показати всі (${all.length})`;
 }
 
 function renderAlerts(){
-  const a = (S.alerts || []).slice().reverse().slice(0, 10);
+  const all = (ARCH && ARCH.events.length ? ARCH.events.map(e => ({ts: e.ts, level: e.kind === "offline" ? "warn" : e.kind, text: e.text})) : (S.alerts || [])).slice().reverse();
+  const a = showAllEv ? all.slice(0, 300) : all.slice(0, 10);
   const col = {crit: "var(--red)", warn: "var(--amber)", info: "var(--muted)"};
-  $("alerts").innerHTML = a.map(x => `<div><time class="num">${dm(x.ts)} ${hm(x.ts)}</time><span style="color:${x.level === "info" ? "var(--text)" : col[x.level]}">${esc(x.text)}</span></div>`).join("")
-    || `<div style="color:var(--muted)">Сповіщень ще не було</div>`;
+  $("alerts").innerHTML = a.map(x => `<div><time class="num">${dm(x.ts)} ${hm(x.ts)}</time><span style="color:${x.level === "info" ? "var(--text)" : (col[x.level] || "var(--text)")}">${esc(x.text)}</span></div>`).join("")
+    || `<div style="color:var(--muted)">Подій ще не було</div>`;
+  const more = $("alertsMore");
+  more.classList.toggle("hidden", all.length <= 10);
+  more.textContent = showAllEv ? "Згорнути" : `Показати ще (${all.length})`;
 }
 
 // ---------- налаштування ----------
@@ -635,6 +804,13 @@ document.querySelectorAll("#rangeTabs button").forEach(x => {
   x.classList.toggle("act", Number(x.dataset.h) === rangeH);
   x.onclick = () => { rangeH = Number(x.dataset.h); LS.set("rangeH", rangeH); document.querySelectorAll("#rangeTabs button").forEach(y => y.classList.toggle("act", y === x)); renderCharts(); };
 });
+document.querySelectorAll("#statTabs button").forEach(x => {
+  x.classList.toggle("act", Number(x.dataset.d) === statDays);
+  x.onclick = () => { statDays = Number(x.dataset.d); LS.set("statDays", statDays); document.querySelectorAll("#statTabs button").forEach(y => y.classList.toggle("act", y === x)); renderStats(); };
+});
+$("csvBtn").onclick = () => { if (!ARCH) { loadArchive(true).then(exportCsv); } else exportCsv(); };
+$("outMore").onclick = () => { showAllOut = !showAllOut; renderOutages(); };
+$("alertsMore").onclick = () => { showAllEv = !showAllEv; renderAlerts(); };
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && token && gistId) { load(true); ping(true); } });
 
 setInterval(() => {
@@ -643,6 +819,7 @@ setInterval(() => {
   const every = now() < fastUntil ? 5 : 20;
   if (now() - lastFetch >= every) load();
   ping(false);
+  if (S && S.archive_gist && now() - archTs > 600) loadArchive();
 }, 1000);
 
 if (token && gistId) { showApp(); load(true); ping(true); }

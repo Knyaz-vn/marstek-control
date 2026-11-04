@@ -5,3 +5,4 @@ agent/*.tmp
 agent/agent.log*
 agent/agent.err
 __pycache__/
+agent/archive.json

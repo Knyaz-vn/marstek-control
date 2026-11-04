@@ -25,6 +25,8 @@ CFG_PATH = os.path.join(BASE, "config.json")
 SETTINGS_PATH = os.path.join(BASE, "settings.json")
 STATE_PATH = os.path.join(BASE, "state.json")
 LOG_PATH = os.path.join(BASE, "agent.log")
+ARCHIVE_PATH = os.path.join(BASE, "archive.json")
+ARCHIVE_DESC = "marstek-archive"
 GIST_DESC = "marstek-agent"
 
 DEFAULTS = {
@@ -77,6 +79,9 @@ DEFAULTS = {
     "push_idle_sec": 900,
     "poll_sec": 30,
 
+    "price_day": 4.32,
+    "price_night": 2.16,
+    "archive_gist_id": "",
     "tg_token": "",
     "tg_chat_id": 0,
     "tg_api": "https://api.telegram.org",
@@ -105,6 +110,8 @@ EDITABLE = {
     "low_soc_alert": (5, 60, int),
     "queue": (None, None, str),
     "hold_mode": (None, None, str),
+    "price_day": (0, 100, float),
+    "price_night": (0, 100, float),
 }
 
 
@@ -302,6 +309,7 @@ def read_station():
     t["rem_wh"] = num(bat.get("bat_capacity"))
     gi, go = num(es.get("total_grid_input_energy")), num(es.get("total_grid_output_energy"))
     t["grid_ctr"] = None if gi is None and go is None else (gi or 0) + (go or 0)
+    t["grid_in"], t["grid_out"], t["rem_fresh"] = gi, go, bat_fresh
     if bat_fresh:
         remember_remaining(t)
     if t["bat_w"] is None:
@@ -342,16 +350,19 @@ def read_station():
 def set_passive(power_w, seconds):
     cfg = {"mode": "Passive", "passive_cfg": {"power": int(power_w), "cd_time": int(seconds)}}
     RT["expected_mode"] = "passive"
+    log(f"Команда станції: пасивний {int(power_w)} Вт на {int(seconds)} с")
     return rpc("ES.SetMode", {"id": 0, "config": cfg})
 
 
 def set_auto():
     RT["expected_mode"] = "auto"
+    log("Команда станції: Auto")
     return rpc("ES.SetMode", {"id": 0, "config": {"mode": "Auto", "auto_cfg": {"enable": 1}}})
 
 
 def set_ups():
     RT["expected_mode"] = "ups"
+    log("Команда станції: UPS")
     return rpc("ES.SetMode", {"id": 0, "config": {"mode": "UPS", "ups_cfg": {"enable": 1}}})
 
 
@@ -591,6 +602,7 @@ def alert(level, text):
     """level: info | warn | crit. Пише в журнал дашборда і в Telegram."""
     icon = {"info": "ℹ️", "warn": "⚠️", "crit": "🔥"}.get(level, "")
     STATE["alerts"] = (STATE["alerts"] + [{"ts": int(now_ts()), "level": level, "text": text}])[-30:]
+    archive_event(level, text)
     RT["push_now"] = True
     log(f"[{level}] {text}")
     tg_send(f"{icon} {text}".strip())
@@ -784,6 +796,9 @@ def track_outage(t):
         rec = {"start": o["start"], "end": int(end_ts), "wh": round(o["wh"]),
                "soc_start": o["soc_start"], "soc_end": soc}
         STATE["outages"] = (STATE["outages"] + [rec])[-30:]
+        ARCHIVE["outages"].append(rec)
+        RT.setdefault("arch_dirty", set()).add("events")
+        archive_save()
         RT["outage"] = None
         RT["end_cnt"] = 0
         alert("info", f"Світло повернулось близько {fmt_t(rec['end'])}. Тривалість {fmt_dur(rec['end'] - rec['start'])}, "
@@ -822,6 +837,140 @@ def track_history(t):
     STATE["history"].append([int(t["ts"]), avg("soc"), avg("bat_w"), avg("load_w"), avg("temp")])
     cutoff = now_ts() - 26 * 3600
     STATE["history"] = [p for p in STATE["history"] if p[0] >= cutoff]
+
+
+# ---------------- Архів: погодинна статистика назавжди ----------------
+ARCHIVE = load_json(ARCHIVE_PATH, {})
+for _k in ("hours", "outages", "events"):
+    ARCHIVE.setdefault(_k, [])
+
+
+def archive_save():
+    save_json(ARCHIVE_PATH, ARCHIVE)
+
+
+def archive_event(kind, text, ts=None):
+    ARCHIVE["events"].append({"ts": int(ts or now_ts()), "kind": kind, "text": text})
+    RT.setdefault("arch_dirty", set()).add("events")
+    archive_save()
+
+
+def hour_start(ts):
+    return int(dt.datetime.fromtimestamp(ts).replace(minute=0, second=0, microsecond=0).timestamp())
+
+
+def month_key(ts):
+    return dt.datetime.fromtimestamp(ts).strftime("%Y-%m")
+
+
+def new_hour_acc(h):
+    return {"t": h, "n": 0, "soc_sum": 0.0, "smin": None, "smax": None, "load_wh": 0.0, "lmax": 0.0,
+            "tmin": None, "tmax": None, "tsum": 0.0, "tn": 0, "gin0": None, "gin1": None, "gout0": None,
+            "gout1": None, "chg": 0.0, "dis": 0.0, "out_s": 0.0, "on_s": 0.0, "hi90_s": 0.0, "rmax": None,
+            "last_ts": None, "rem_prev": None}
+
+
+def finalize_hour(a):
+    if not a or not a["n"]:
+        return None
+    r = lambda v, d=1: None if v is None else round(v, d)
+    return {"t": a["t"], "soc": r(a["soc_sum"] / a["n"]), "smin": r(a["smin"], 0), "smax": r(a["smax"], 0),
+            "load": r(a["load_wh"]), "lmax": r(a["lmax"], 0),
+            "tmin": r(a["tmin"]), "tmax": r(a["tmax"]), "tavg": r(a["tsum"] / a["tn"]) if a["tn"] else None,
+            "gin": r(max(0.0, (a["gin1"] or 0) - (a["gin0"] or 0)), 0) if a["gin0"] is not None else None,
+            "gout": r(max(0.0, (a["gout1"] or 0) - (a["gout0"] or 0)), 0) if a["gout0"] is not None else None,
+            "chg": r(a["chg"], 0), "dis": r(a["dis"], 0), "out": r(a["out_s"] / 60, 0), "on": r(a["on_s"] / 60, 0),
+            "hi90": r(a["hi90_s"] / 60, 0), "rmax": a["rmax"]}
+
+
+def close_hour():
+    row = finalize_hour(RT.get("hacc"))
+    if row:
+        ARCHIVE["hours"] = [h for h in ARCHIVE["hours"] if h["t"] != row["t"]] + [row]
+        RT.setdefault("arch_dirty", set()).add(month_key(row["t"]))
+        archive_save()
+
+
+def track_archive(t):
+    """Накопичує статистику поточної години; на початку нової години записує рядок в архів."""
+    ts = t["ts"]
+    h = hour_start(ts)
+    a = RT.get("hacc")
+    if a is None or a["t"] != h:
+        if a is not None:
+            close_hour()
+        prev_rem = a["rem_prev"] if a else None
+        a = RT["hacc"] = new_hour_acc(h)
+        a["rem_prev"] = prev_rem
+    dt_s = 0.0 if a["last_ts"] is None else max(0.0, min(ts - a["last_ts"], 300))
+    if a["last_ts"] is None and RT.get("hacc_last_ts"):
+        dt_s = max(0.0, min(ts - RT["hacc_last_ts"], 300))
+    a["last_ts"] = RT["hacc_last_ts"] = ts
+    soc, load, temp = t.get("soc"), t.get("load_w"), t.get("temp")
+    a["n"] += 1
+    if soc is not None:
+        a["soc_sum"] += soc
+        a["smin"] = soc if a["smin"] is None else min(a["smin"], soc)
+        a["smax"] = soc if a["smax"] is None else max(a["smax"], soc)
+        if soc >= 90:
+            a["hi90_s"] += dt_s
+    if load is not None and load > 0:
+        a["load_wh"] += load * dt_s / 3600
+        a["lmax"] = max(a["lmax"], load)
+    if temp is not None:
+        a["tmin"] = temp if a["tmin"] is None else min(a["tmin"], temp)
+        a["tmax"] = temp if a["tmax"] is None else max(a["tmax"], temp)
+        a["tsum"] += temp
+        a["tn"] += 1
+    for k, key in (("gin", "grid_in"), ("gout", "grid_out")):
+        v = t.get(key)
+        if v is not None:
+            if a[k + "0"] is None:
+                a[k + "0"] = v
+            a[k + "1"] = v
+    rem = t.get("rem_wh")
+    if rem is not None and t.get("rem_fresh"):
+        if a["rem_prev"] is not None:
+            d = rem - a["rem_prev"]
+            if 0 < d < 1500:
+                a["chg"] += d
+            elif -1500 < d < 0:
+                a["dis"] += -d
+        a["rem_prev"] = rem
+        if soc is not None and soc >= 99:
+            a["rmax"] = rem if a["rmax"] is None else max(a["rmax"], rem)
+    if RT["outage"]:
+        a["out_s"] += dt_s
+    a["on_s"] += dt_s
+
+
+def seed_archive_from_history():
+    """Перший запуск з архівом: переносимо в нього останню добу з короткої історії."""
+    if ARCHIVE["hours"] or not STATE.get("history"):
+        return
+    by_h = {}
+    for p in STATE["history"]:
+        by_h.setdefault(hour_start(p[0]), []).append(p)
+    cur = hour_start(now_ts())
+    for h, pts in sorted(by_h.items()):
+        if h >= cur:
+            continue
+        vals = lambda i: [x[i] for x in pts if x[i] is not None]
+        socs, bats, loads, temps = vals(1), vals(2), vals(3), vals(4)
+        cover = min(1.0, len(pts) * CFG["history_step_sec"] / 3600)
+        ARCHIVE["hours"].append({
+            "t": h, "soc": round(sum(socs) / len(socs), 1) if socs else None,
+            "smin": min(socs) if socs else None, "smax": max(socs) if socs else None,
+            "load": round(sum(loads) / len(loads) * cover, 1) if loads else None, "lmax": max(loads) if loads else None,
+            "tmin": min(temps) if temps else None, "tmax": max(temps) if temps else None,
+            "tavg": round(sum(temps) / len(temps), 1) if temps else None, "gin": None, "gout": None,
+            "chg": round(sum(b for b in bats if b > 0) / len(bats) * cover) if bats else 0,
+            "dis": round(sum(-b for b in bats if b < 0) / len(bats) * cover) if bats else 0,
+            "out": None, "on": round(cover * 60), "hi90": None, "rmax": None})
+    known = {o["start"] for o in ARCHIVE["outages"]}
+    ARCHIVE["outages"] += [o for o in STATE.get("outages", []) if o["start"] not in known]
+    RT.setdefault("arch_dirty", set()).update({month_key(h["t"]) for h in ARCHIVE["hours"]} | {"events"})
+    archive_save()
 
 
 def calibrate_sign(t):
@@ -867,6 +1016,8 @@ def sample_step():
         t = read_station()
     except Exception as e:
         RT["fail_count"] += 1
+        if RT["fail_count"] == 1:
+            RT["fail_since"] = now_ts()
         log(f"Опитування станції: {e}")
         if RT["fail_count"] >= 2:
             switch_failed("станція перестала відповідати")
@@ -883,6 +1034,9 @@ def sample_step():
         RT["mode_ts"] = 0   # після перезавантаження станція могла повернутись у свій режим
         RT["grid_ok_ts"] = 0
         RT["grid_reset_ts"] = now_ts()
+    if RT["fail_count"] >= 2 and RT.get("fail_since"):
+        archive_event("offline", f"Станція не відповідала з {fmt_t(RT['fail_since'])} до {fmt_t(t['ts'])} "
+                                 f"({fmt_dur(t['ts'] - RT['fail_since'])}), можливе перезавантаження")
     RT["online"], RT["fail_count"], RT["last_seen"] = True, 0, t["ts"]
     RT["tele"] = t
     calibrate_sign(t)
@@ -890,6 +1044,7 @@ def sample_step():
     track_outage(t)
     track_profile(t)
     track_history(t)
+    track_archive(t)
     return t
 
 
@@ -1225,6 +1380,43 @@ class Gist:
         self.etag = None
 
 
+class ArchiveGist:
+    """Окремий приватний gist з архівом: файл на кожен місяць і журнал подій. Дашборд читає його лише за потреби."""
+    def __init__(self, api):
+        self.api = api
+
+    def ensure(self):
+        if CFG.get("archive_gist_id"):
+            return CFG["archive_gist_id"]
+        _, gists, _ = self.api.req("GET", "/gists?per_page=100")
+        gid = next((g["id"] for g in gists or [] if g.get("description") == ARCHIVE_DESC), None)
+        if not gid:
+            _, g, _ = self.api.req("POST", "/gists", {"description": ARCHIVE_DESC, "public": False,
+                                                      "files": {"events.json": {"content": "{}"}}})
+            gid = g["id"]
+            log(f"Створено приватний gist архіву {gid}")
+        USER_CFG["archive_gist_id"] = gid
+        save_json(CFG_PATH, USER_CFG)
+        rebuild_cfg()
+        RT.setdefault("arch_dirty", set()).update({month_key(h["t"]) for h in ARCHIVE["hours"]} | {"events"})
+        return gid
+
+    def push(self):
+        gid = self.ensure()
+        dirty = RT.get("arch_dirty") or set()
+        if not dirty:
+            return
+        files = {}
+        for key in sorted(dirty):
+            if key == "events":
+                body = {"outages": ARCHIVE["outages"], "events": ARCHIVE["events"][-2000:]}
+            else:
+                body = {"month": key, "hours": [h for h in ARCHIVE["hours"] if month_key(h["t"]) == key]}
+            files[f"{key}.json"] = {"content": json.dumps(body, ensure_ascii=False, separators=(",", ":"))}
+        self.api.req("PATCH", f"/gists/{gid}", {"files": files})
+        RT["arch_dirty"] = set()
+
+
 def build_public_state():
     t = RT["tele"]
     o = RT["outage"]
@@ -1251,6 +1443,7 @@ def build_public_state():
         "history": STATE["history"],
         "alerts": STATE["alerts"][-15:],
         "acked": STATE["acked"][-40:], "last_cmd": RT["last_cmd"],
+        "archive_gist": CFG.get("archive_gist_id"), "hour_now": finalize_hour(RT.get("hacc")),
     }
 
 
@@ -1262,6 +1455,8 @@ def main():
     log(f"Агент v{VERSION} запущено, станція {CFG['marstek_ip']}, черга {CFG['queue']}, час {tz_line()}")
     tg_send(f"Агент Marstek v{VERSION} запущено\n{HELP}")
     gist = Gist()
+    agist = ArchiveGist(gist)
+    seed_archive_from_history()
     while True:
         try:
             n = now_ts()
@@ -1283,6 +1478,9 @@ def main():
                         gist.push()
                         RT["push_ts"] = now_ts()
                         RT["push_now"] = False
+                    if RT.get("arch_dirty") and now_ts() - RT.get("arch_push_ts", 0) > 300:
+                        RT["arch_push_ts"] = now_ts()
+                        agist.push()
                 except Exception as e:
                     log(f"GitHub: {e}")
                     RT["poll_ts"] = now_ts() + 30
@@ -1294,6 +1492,7 @@ def main():
             tg_poll(8 if CFG.get("tg_token") else 3)
         except KeyboardInterrupt:
             save_json(STATE_PATH, STATE)
+            archive_save()
             break
         except Exception:
             log(traceback.format_exc())
