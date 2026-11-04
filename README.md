@@ -29,19 +29,16 @@ Telegram ──────────┘
 3. Закріпи за станцією постійну IP-адресу. На Xiaomi 4A це робиться в адмінці роутера (`192.168.31.1`) у розділі прив'язки IP до MAC-адреси (DHCP static / Bind IP and MAC) або в додатку Mi WiFi у налаштуваннях мережі. Вибери станцію зі списку пристроїв, збережи і запиши адресу.
 4. Роутер і планшет мають живитися від виходу станції, інакше під час відключення агент втратить зв'язок.
 
-## Крок 2. GitHub: репозиторій, сторінка і токен
+## Крок 2. GitHub
 
-Зручніше з комп'ютера.
+Репозиторій і сайт уже налаштовані:
 
-1. Зареєструйся на github.com, якщо ще немає акаунта.
-2. Справа вгорі «+» → **New repository**. Назва `marstek-control`, тип **Public**, решту не чіпай → **Create repository**.
-3. На сторінці репозиторію натисни **uploading an existing file**. Розпакуй архів і перетягни у вікно **весь вміст** папки `marstek-control` (файл `index.html`, папки `agent`, `icons`, `vendor` і решту). Внизу **Commit changes**.
-4. Увімкни сайт: **Settings** → **Pages** → у Source вибери **Deploy from a branch**, гілка **main**, папка **/(root)** → **Save**. За 1-2 хвилини дашборд з'явиться за адресою `https://ТВІЙ_ЛОГІН.github.io/marstek-control/`.
-5. Створи токен: клік по аватарці → **Settings** → внизу зліва **Developer settings** → **Personal access tokens** → **Tokens (classic)** → **Generate new token (classic)**.
-   - Note: `marstek`
-   - Expiration: **No expiration** (або рік, тоді не забудь оновити)
-   - Постав галочку **лише gist**, більше нічого
-   - **Generate token** і одразу скопіюй його (`ghp_...`). Повторно GitHub його не покаже.
+- код: https://github.com/Knyaz-vn/marstek-control
+- дашборд: **https://knyaz-vn.github.io/marstek-control/**
+
+Дашборд публікується з гілки `gh-pages`, вона автоматично синхронізується з `main` при кожній зміні.
+
+Потрібен лише токен. Відкрий https://github.com/settings/tokens/new?scopes=gist&description=marstek, у Expiration вибери **No expiration**, натисни **Generate token** і збережи його (`ghp_...`). Повторно GitHub його не покаже.
 
 Токен дає доступ тільки до твоїх gist-нотаток, до репозиторіїв і акаунта він доступу не має. Репозиторій публічний, але секретів у ньому немає: токени зберігаються лише на планшеті і в браузері iPhone.
 
@@ -58,7 +55,7 @@ Telegram ──────────┘
 
 ```sh
 pkg update -y && pkg install -y python git
-git clone https://github.com/ТВІЙ_ЛОГІН/marstek-control
+git clone https://github.com/Knyaz-vn/marstek-control
 cd marstek-control/agent
 python agent.py --setup
 ```
@@ -95,7 +92,7 @@ mkdir -p ~/.termux/boot && ln -sf ~/marstek-control/agent/start.sh ~/.termux/boo
 
 ## Крок 5. iPhone
 
-1. Відкрий у **Safari** `https://ТВІЙ_ЛОГІН.github.io/marstek-control/`.
+1. Відкрий у **Safari** https://knyaz-vn.github.io/marstek-control/
 2. Кнопка «Поділитися» → **«На початковий екран»** → «Додати». З'явиться іконка «Станція».
 3. Відкрий дашборд саме з цієї іконки (у iOS у неї окреме сховище, тому токен вводиться вже в ній).
 4. Встав той самий токен GitHub → **Підключити**. Щоб перенести токен з комп'ютера, найпростіше надіслати його собі в «Збережене» в Telegram, вставити і одразу видалити повідомлення.
