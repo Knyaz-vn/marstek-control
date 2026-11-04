@@ -82,8 +82,10 @@ DEFAULTS = {
     "sample_sec": 30,
     "control_sec": 60,
     "history_step_sec": 120,
-    "passive_seconds": 300,
-    "resend_sec": 120,
+    "passive_seconds": 900,
+    "resend_sec": 300,
+    "hold_seconds": 3600,
+    "hold_resend_sec": 3000,
 }
 
 # Що можна міняти з дашборда і Telegram: ключ -> (мін, макс, тип)
@@ -354,7 +356,7 @@ def apply_hold():
     elif m == "ups":
         set_ups()
     else:
-        set_passive(0, CFG["passive_seconds"])
+        set_passive(0, CFG["hold_seconds"])
 
 
 def apply_off():
@@ -846,8 +848,10 @@ def control_step():
                 alert("crit", "Під час примусового заряду батарея розряджається. Автоматику вимкнено. "
                               "Перевір charge_sign у config.json (-1 або 1).")
                 return
-        elif action in ("hold", "outage"):
-            refresh = CFG["resend_sec"] if CFG["hold_mode"] == "passive0" else 1800
+        elif action == "outage":
+            pass   # під час відключення станцію не чіпаємо: зміна режиму в автономній роботі може смикнути реле
+        elif action == "hold":
+            refresh = CFG["hold_resend_sec"] if CFG["hold_mode"] == "passive0" else 3600
             if changed or since > refresh:
                 apply_hold()
                 RT["last_sent"] = now_ts()
