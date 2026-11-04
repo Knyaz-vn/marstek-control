@@ -355,11 +355,23 @@ def set_ups():
     return rpc("ES.SetMode", {"id": 0, "config": {"mode": "UPS", "ups_cfg": {"enable": 1}}})
 
 
+def switch_failed(why):
+    """Станція перезавантажилась невдовзі після того, як агент змінив їй режим: більше не пробуємо."""
+    if RT.get("switch_ts") and now_ts() - RT["switch_ts"] < 600:
+        RT["switch_ts"] = None
+        STATE["switch_fails"] = STATE.get("switch_fails", 0) + 1
+        STATE["enabled"] = False
+        save_json(STATE_PATH, STATE)
+        alert("crit", f"Схоже, станція перезавантажилась після того, як агент перевів її в пасивний режим ({why}). "
+                      "Керування вимкнено, щоб це не повторювалось. Агент лише стежить. Увімкнути знову: /on")
+
+
 def note_mode(mode):
     """Станція сама змінила режим (перезавантаження чи зміна в додатку): довіру до «світло є» скидаємо."""
     exp = RT.get("expected_mode")
     if mode and exp and not str(mode).lower().startswith(exp):
         log(f"Станція сама перейшла в режим {mode} (перезавантаження або зміна в додатку)")
+        switch_failed(f"режим знову {mode}")
         RT["grid_ok_ts"] = 0
         RT["grid_reset_ts"] = now_ts()
         RT["expected_mode"] = None
@@ -856,6 +868,8 @@ def sample_step():
     except Exception as e:
         RT["fail_count"] += 1
         log(f"Опитування станції: {e}")
+        if RT["fail_count"] >= 2:
+            switch_failed("станція перестала відповідати")
         if RT["fail_count"] >= 3 and now_ts() - RT.get("disc_ts", 0) > 600:
             RT["disc_ts"] = now_ts()
             if rediscover():
@@ -884,6 +898,8 @@ def control_step():
     if not RT["online"] or t.get("soc") is None:
         return
     soc = t["soc"]
+    if RT.get("switch_ts") and now_ts() - RT["switch_ts"] < 120:
+        return                          # щойно перемкнули режим: спершу переконуємось, що станція не перезавантажилась
     d = decide(dt.datetime.now(), soc)
     action = d["action"]
     key = f"{action}|{d['target']}|{d['reason']}|{charge_power()}|{CFG['hold_mode']}"
@@ -901,10 +917,14 @@ def control_step():
             note_mode(fresh)
         except Exception:
             fresh = None
+        if not STATE["enabled"] and action != "off":
+            return                      # керування щойно вимкнено (станція перезавантажилась): нічого не надсилаємо
         cur = str(t.get("mode") or "").lower()
         switch = not cur.startswith(target_mode.lower())
         if not fresh:
             target_mode = None          # режим невідомий: наосліп нічого не надсилаємо
+        elif switch and action != "off":
+            RT["switching"] = True
         elif action == "off" and not switch:
             target_mode = None          # станція вже у своєму режимі, нічого не робимо
         elif not grid_confirmed(60 if switch else 900):
@@ -920,6 +940,8 @@ def control_step():
             RT["pending"] = False
     else:
         target_mode = None
+    if not target_mode:
+        RT.pop("switching", None)
 
     try:
         if action == "charge":
@@ -943,6 +965,9 @@ def control_step():
         elif action == "off" and target_mode:
             apply_off()
             RT["last_sent"] = now_ts()
+        if target_mode and RT.pop("switching", False):
+            RT["switch_ts"] = now_ts()   # стежимо 10 хв, чи не перезавантажиться станція після переходу
+            log(f"Перевів станцію в режим {target_mode}")
     except Exception as e:
         log(f"Команда станції ({action}): {e}")
         return
