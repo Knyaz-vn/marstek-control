@@ -53,7 +53,7 @@ DEFAULTS = {
     "reserve_pct": 10,
     "hysteresis": 3,
     "hold_mode": "passive0",
-    "off_mode": "auto",
+    "off_mode": "ups",
 
     "queue": "3.1",
     "schedule_url": "https://raw.githubusercontent.com/vn-progr/gpv-voe-vinnytsia/main/data/Vinnytsiaoblenerho.json",
@@ -856,8 +856,10 @@ def control_step():
                 apply_hold()
                 RT["last_sent"] = now_ts()
         elif action == "off" and changed:
-            apply_off()
-            RT["last_sent"] = now_ts()
+            cur = str(t.get("mode") or "").lower()
+            if not RT["outage"] and cur and cur != CFG["off_mode"].lower():
+                apply_off()   # повертаємо станцію в її звичайний режим, лише якщо вона не в ньому
+                RT["last_sent"] = now_ts()
     except Exception as e:
         log(f"Команда станції ({action}): {e}")
         return
@@ -916,7 +918,7 @@ def handle_command(cmd, value=None):
     if cmd == "off":
         STATE["enabled"] = False
         RT["last_key"] = None
-        return "Автоматику вимкнено, станція переходить у звичайний режим"
+        return "Автоматику вимкнено. Агент лише стежить, станція працює у своєму режимі (UPS)"
     if cmd == "charge":
         v = max(10, min(100, int(float(value))))
         STATE["force_target"] = v
@@ -1390,6 +1392,11 @@ if __name__ == "__main__":
     ARGS = [a.lstrip("-\u2014\u2013\u2012").lower() for a in sys.argv[1:]]
     if "setup" in ARGS:
         setup()
+    elif "off" in ARGS or "on" in ARGS:
+        STATE["enabled"] = "on" in ARGS
+        save_json(STATE_PATH, STATE)
+        print("Автоматику увімкнено: агент керуватиме зарядом." if STATE["enabled"] else
+              "Автоматику вимкнено: агент лише стежить і надсилає сповіщення, станцію не перемикає.")
     elif "test" in ARGS:
         selftest()
     elif "diag" in ARGS:
