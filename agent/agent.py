@@ -84,10 +84,10 @@ DEFAULTS = {
     "sample_sec": 30,
     "control_sec": 60,
     "history_step_sec": 120,
-    "passive_seconds": 900,
-    "resend_sec": 300,
-    "hold_seconds": 7200,
-    "hold_resend_sec": 3300,
+    "passive_seconds": 300,
+    "resend_sec": 240,
+    "hold_seconds": 300,
+    "hold_resend_sec": 21600,
 }
 
 # Що можна міняти з дашборда і Telegram: ключ -> (мін, макс, тип)
@@ -362,7 +362,7 @@ def switch_failed(why):
         STATE["switch_fails"] = STATE.get("switch_fails", 0) + 1
         STATE["enabled"] = False
         save_json(STATE_PATH, STATE)
-        alert("crit", f"Схоже, станція перезавантажилась після того, як агент перевів її в пасивний режим ({why}). "
+        alert("crit", f"Схоже, станція перезавантажилась після команди агента ({why}). "
                       "Керування вимкнено, щоб це не повторювалось. Агент лише стежить. Увімкнути знову: /on")
 
 
@@ -899,7 +899,7 @@ def control_step():
         return
     soc = t["soc"]
     if RT.get("switch_ts") and now_ts() - RT["switch_ts"] < 120:
-        return                          # щойно перемкнули режим: спершу переконуємось, що станція не перезавантажилась
+        return                          # щойно надіслали команду: спершу переконуємось, що станція не перезавантажилась
     d = decide(dt.datetime.now(), soc)
     action = d["action"]
     key = f"{action}|{d['target']}|{d['reason']}|{charge_power()}|{CFG['hold_mode']}"
@@ -969,9 +969,10 @@ def control_step():
         elif action == "off" and target_mode:
             apply_off()
             RT["last_sent"] = now_ts()
-        if target_mode and RT.pop("switching", False):
-            RT["switch_ts"] = now_ts()   # стежимо 10 хв, чи не перезавантажиться станція після переходу
-            log(f"Перевів станцію в режим {target_mode}")
+        if target_mode:
+            RT["switch_ts"] = now_ts()   # після будь-якої команди 10 хв стежимо, чи не перезавантажиться станція
+            if RT.pop("switching", False):
+                log(f"Перевів станцію в режим {target_mode}")
     except Exception as e:
         log(f"Команда станції ({action}): {e}")
         return
@@ -1526,6 +1527,31 @@ def modetest():
     print("\nГотово. Скинь скрін і напиши, чи блимало світло або клацало реле на кроці 1, 2 чи 3.")
 
 
+def cmdtest():
+    """Перевірка команд у пасивному режимі: утримання і короткий заряд. Тільки коли Є СВІТЛО і агент зупинений."""
+    print("Перевірка команд заряду. Тільки коли Є СВІТЛО, агент зупинений (sh stop.sh), станція в пасивному режимі.")
+    m0 = rpc("ES.GetMode", {"id": 0}).get("mode")
+    print(f"Режим зараз: {m0}")
+    if not str(m0).lower().startswith("passive"):
+        print("Станція не в пасивному режимі. Спершу: python agent.py modetest")
+        return
+    input("Enter, щоб почати (Ctrl+C скасувати)... ")
+    steps = [("утримання 0 Вт на 300 с", 0, 300), ("заряд 500 Вт на 120 с", CFG["charge_sign"] * 500, 120),
+             ("утримання 0 Вт на 300 с", 0, 300)]
+    for i, (name, power, sec) in enumerate(steps, 1):
+        print(f"\n{i}/3 {name}. Стеж, чи не блимне світло.")
+        print("    відповідь станції:", set_passive(power, sec))
+        time.sleep(25)
+        try:
+            mode = rpc("ES.GetMode", {"id": 0}).get("mode")
+            t = read_station()
+            print(f"    режим {mode}, заряд {t.get('soc')}%, мережа {t.get('grid_w')} Вт (мінус означає заряд від мережі)")
+        except Exception as e:
+            print(f"    станція не відповідає: {e}. Схоже, перезавантажилась. Тест зупинено.")
+            return
+    print("\nГотово. Скинь скрін і напиши, чи було перезавантаження.")
+
+
 if __name__ == "__main__":
     # Клавіатура Android часто міняє "--" на тире, тому приймаємо setup, -setup, --setup, —setup
     ARGS = [a.lstrip("-\u2014\u2013\u2012").lower() for a in sys.argv[1:]]
@@ -1544,8 +1570,10 @@ if __name__ == "__main__":
         dump()
     elif "modetest" in ARGS:
         modetest()
+    elif "cmdtest" in ARGS:
+        cmdtest()
 
     elif ARGS and ARGS[0] not in ("run", "start"):
-        print("Невідома команда. Доступні: setup, test, diag, dump, modetest, on, off. Без команди запускається агент.")
+        print("Невідома команда. Доступні: setup, test, diag, dump, modetest, cmdtest, on, off. Без команди запускається агент.")
     else:
         main()
