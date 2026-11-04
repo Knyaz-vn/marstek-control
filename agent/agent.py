@@ -616,7 +616,11 @@ def rem_trend(ts, window):
                 w, interval = -sum(d for _, d in seq[1:]) / dur * 3600, dur / (len(seq) - 1)
             elif sign > 0 and rise > drop:
                 w, interval = sum(d for _, d in seq[1:]) / dur * 3600, dur / (len(seq) - 1)
-    return {"span": span, "w": round(w), "drop": drop, "rise": rise, "down_steps": len(downs),
+    mx = sum(p[0] for p in pts) / len(pts)
+    my = sum(p[1] for p in pts) / len(pts)
+    sxx = sum((p[0] - mx) ** 2 for p in pts)
+    w_reg = sum((p[0] - mx) * (p[1] - my) for p in pts) / sxx * 3600 if sxx else 0.0
+    return {"span": span, "w": round(w), "w_reg": round(w_reg), "drop": drop, "rise": rise, "down_steps": len(downs),
             "biggest": max((d for _, d in downs), default=0), "interval": interval,
             "first_down": downs[0][0] if downs else None, "last_down": downs[-1][0] if downs else None}
 
@@ -642,17 +646,21 @@ def outage_evidence(t):
         if bat > 50:
             return "grid", None
         return ("out" if -bat >= thr else "idle"), None
+    # За графіком світла мало б не бути: досить короткого вікна. Поза графіком чекаємо довше, щоб не помилитись.
+    in_block = any(s0 <= t["ts"] < e0 for s0, e0 in outage_blocks())
     for win in CFG["est_windows"]:
         tr = rem_trend(t["ts"], win)
         if not tr:
             continue
         if tr["rise"] >= 2 and tr["rise"] > tr["drop"]:
             return "grid", None          # залишок росте: йде заряд від мережі
-        if tr["down_steps"] < 2 or not tr["interval"]:
+        if not in_block and win < 900:
             continue
-        recent = t["ts"] - tr["last_down"] <= max(2.5 * tr["interval"], 90)
-        if (-tr["w"] >= thr and recent and tr["rise"] <= 0.3 * tr["drop"]
-                and tr["biggest"] <= 0.7 * tr["drop"]):
+        if tr["down_steps"] < 3 or not tr["interval"] or tr["span"] < 0.7 * win:
+            continue
+        recent = t["ts"] - tr["last_down"] <= max(2.5 * tr["interval"], 120)
+        if (-tr["w"] >= thr and -tr["w_reg"] >= 0.85 * thr and recent
+                and tr["rise"] <= 0.3 * tr["drop"] and tr["biggest"] <= 0.7 * tr["drop"]):
             return "out", tr
     return None, None
 
