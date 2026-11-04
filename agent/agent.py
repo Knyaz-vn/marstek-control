@@ -927,7 +927,11 @@ def control_step():
             RT["switching"] = True
         elif action == "off" and not switch:
             target_mode = None          # станція вже у своєму режимі, нічого не робимо
-        elif not grid_confirmed(60 if switch else 900):
+        elif (switch and not grid_confirmed(60)) or (
+                not switch and not grid_confirmed(900)
+                and any(s0 <= now_ts() < e0 for s0, e0 in outage_blocks())):
+            # Зміна режиму лише при щойно підтвердженому світлі. Потужність у тому ж пасивному режимі
+            # міняємо вільно, крім годин, коли за графіком світла може не бути.
             # світло не підтверджене: команду не надсилаємо, станція лишається як є
             d = dict(d, reason=d["reason"] + " · чекаю підтвердження, що світло є")
             target_mode = None
