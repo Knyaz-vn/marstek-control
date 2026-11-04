@@ -232,6 +232,14 @@ def num(v):
         return None
 
 
+def watts(v):
+    """Прошивка 150 віддає від'ємну потужність як беззнакове 16-бітне число: -12 Вт приходить як 65524."""
+    w = num(v)
+    if w is not None and 32767 < w < 65536:
+        w -= 65536
+    return w
+
+
 def read_station():
     """Зчитує стан станції. bat_w > 0 означає заряд, < 0 розряд."""
     t = {"ts": now_ts()}
@@ -256,13 +264,13 @@ def read_station():
     if temp is not None and abs(temp) > 100:   # деякі прошивки віддають десяті частки
         temp = temp / 10.0
     t["temp"] = temp
-    t["load_w"] = num(es.get("offgrid_power"))
-    t["grid_w"] = num(es.get("ongrid_power"))
+    t["load_w"] = watts(es.get("offgrid_power"))
+    t["grid_w"] = watts(es.get("ongrid_power"))
     t["cap_wh"] = num(es.get("bat_cap")) or num(bat.get("rated_capacity"))
     t["charge_ok"] = bat.get("charg_flag")
     t["discharge_ok"] = bat.get("dischrg_flag")
 
-    raw = num(es.get("bat_power"))
+    raw = watts(es.get("bat_power"))
     if raw is not None:
         sign = STATE.get("bat_sign")
         if sign is None:
@@ -776,7 +784,7 @@ def sample_step():
             RT["disc_ts"] = now_ts()
             if rediscover():
                 return None
-        if RT["online"] and RT["fail_count"] >= 3:
+        if RT["online"] and RT["fail_count"] >= 5:   # прошивка 150+ сама перезапускає Wi-Fi, коли немає хмари
             RT["online"] = False
             alert("warn", f"Станція не відповідає ({e}). Перевір Wi-Fi і живлення роутера.")
         return None
