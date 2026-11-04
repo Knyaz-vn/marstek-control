@@ -1,0 +1,7 @@
+agent/config.json
+agent/settings.json
+agent/state.json
+agent/*.tmp
+agent/agent.log*
+agent/agent.err
+__pycache__/

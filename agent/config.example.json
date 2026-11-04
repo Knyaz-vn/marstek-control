@@ -1,0 +1,8 @@
+{
+  "marstek_ip": "192.168.31.50",
+  "marstek_port": 30000,
+  "queue": "3.1",
+  "github_token": "",
+  "tg_token": "",
+  "tg_chat_id": 0
+}

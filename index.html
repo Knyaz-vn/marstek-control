@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Marstek Станція</title>
+<meta name="description" content="Керування станцією Marstek Venus E: заряд, температура, графік відключень">
+<meta name="theme-color" content="#0e1013">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Станція">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<script src="vendor/chart.umd.js"></script>
+<style>
+:root{
+  --bg:#0e1013; --panel:#16191e; --panel2:#1c2027; --line:#262b33; --text:#e8eaed; --muted:#8b939e; --faint:#5d6570;
+  --green:#3fb950; --green-soft:rgba(63,185,80,.14); --blue:#58a6ff; --blue-soft:rgba(88,166,255,.14);
+  --amber:#e3a008; --amber-soft:rgba(227,160,8,.15); --red:#f85149; --red-soft:rgba(248,81,73,.15);
+  --violet:#a371f7; --orange:#f0883e; --accent:#58a6ff; --radius:16px;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f3f4f6; --panel:#ffffff; --panel2:#f6f7f9; --line:#e3e6ea; --text:#15181d; --muted:#5f6772; --faint:#9aa1ab;
+    --green:#1a7f37; --green-soft:rgba(26,127,55,.10); --blue:#0969da; --blue-soft:rgba(9,105,218,.10);
+    --amber:#9a6700; --amber-soft:rgba(191,135,0,.13); --red:#cf222e; --red-soft:rgba(207,34,46,.10);
+    --violet:#8250df; --orange:#bc4c00; --accent:#0969da; color-scheme:light;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Inter,sans-serif;
+  -webkit-font-smoothing:antialiased;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+.num{font-variant-numeric:tabular-nums}
+.wrap{max-width:1080px;margin:0 auto;padding:12px 16px 40px}
+header{display:flex;align-items:center;gap:12px;padding:8px 0 14px}
+header h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.01em;flex:1;min-width:0}
+.status{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13px;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+.dot.ok{background:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
+.dot.bad{background:var(--red);box-shadow:0 0 0 3px var(--red-soft)}
+.iconbtn{width:38px;height:38px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--text);
+  display:grid;place-items:center;cursor:pointer;flex:none}
+.iconbtn:active{transform:scale(.96)}
+.iconbtn svg{width:18px;height:18px}
+.spin svg{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.banner{border-radius:12px;padding:11px 14px;margin-bottom:10px;font-size:14px;display:flex;gap:10px;align-items:flex-start}
+.banner b{font-weight:650}
+.banner.crit{background:var(--red-soft);color:var(--red)}
+.banner.warn{background:var(--amber-soft);color:var(--amber)}
+.banner.info{background:var(--blue-soft);color:var(--blue)}
+.banner.mute{background:var(--panel2);color:var(--muted)}
+.banner span{color:var(--text)}
+
+.grid{display:grid;gap:12px}
+.g4{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media (min-width:860px){.g4{grid-template-columns:repeat(4,minmax(0,1fr))}.g2{grid-template-columns:3fr 2fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;min-width:0}
+.card h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px}
+.big{font-size:38px;font-weight:680;letter-spacing:-.03em;line-height:1.05}
+.big small{font-size:17px;font-weight:550;color:var(--muted);margin-left:2px;letter-spacing:0}
+.sub{color:var(--muted);font-size:13px;margin-top:4px}
+.sub b{color:var(--text);font-weight:600}
+.bar{height:8px;border-radius:6px;background:var(--panel2);margin-top:12px;position:relative;overflow:visible}
+.bar i{display:block;height:100%;border-radius:6px;background:var(--green);transition:width .4s}
+.bar .mark{position:absolute;top:-4px;width:2px;height:16px;background:var(--text);border-radius:1px;opacity:.75}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:600;background:var(--panel2);color:var(--muted)}
+.pill.green{background:var(--green-soft);color:var(--green)}
+.pill.amber{background:var(--amber-soft);color:var(--amber)}
+.pill.red{background:var(--red-soft);color:var(--red)}
+.pill.blue{background:var(--blue-soft);color:var(--blue)}
+.t-ok{color:var(--text)} .t-warn{color:var(--amber)} .t-crit{color:var(--red)} .t-low{color:var(--blue)}
+
+section{margin-top:12px}
+.decision{font-size:16px;font-weight:600;margin:2px 0 4px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.spacer{flex:1}
+.switch{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;-webkit-user-select:none}
+.switch input{display:none}
+.switch .track{width:46px;height:28px;border-radius:999px;background:var(--line);position:relative;transition:background .2s;flex:none}
+.switch .track::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.switch input:checked + .track{background:var(--green)}
+.switch input:checked + .track::after{transform:translateX(18px)}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+button.btn{appearance:none;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:11px;
+  padding:9px 14px;font:inherit;font-weight:600;font-size:14px;cursor:pointer;min-height:40px}
+button.btn:active{transform:scale(.97)}
+button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.btn.on{background:var(--green-soft);border-color:var(--green);color:var(--green)}
+button.btn:disabled{opacity:.5}
+.pending{font-size:13px;color:var(--amber);margin-top:10px;display:none}
+.pending.show{display:block}
+
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.tile{background:var(--panel2);border-radius:12px;padding:10px 12px;min-width:0}
+.tile .k{font-size:12px;color:var(--muted)}
+.tile .v{font-size:20px;font-weight:680;letter-spacing:-.02em;margin-top:2px;white-space:nowrap}
+.tile .v small{font-size:12px;font-weight:550;color:var(--muted);letter-spacing:0}
+.tile .s{font-size:12px;color:var(--muted);margin-top:2px}
+@media (max-width:420px){.tile .v{font-size:17px}}
+
+.sched .day{display:grid;grid-template-columns:62px 1fr;gap:10px;align-items:center;margin-top:10px}
+.sched .lbl{font-size:13px;color:var(--muted)}
+.track24{position:relative;height:22px;border-radius:7px;background:var(--green-soft);overflow:hidden}
+.track24 .off{position:absolute;top:0;bottom:0;background:var(--faint);opacity:.55}
+.track24 .now{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--red)}
+.ticks{display:flex;justify-content:space-between;font-size:11px;color:var(--faint);margin:3px 0 0 72px}
+.slist{font-size:13px;color:var(--muted);margin:4px 0 0 72px}
+
+.tabs{display:flex;gap:4px;background:var(--panel2);padding:3px;border-radius:10px}
+.tabs button{border:0;background:none;color:var(--muted);font:inherit;font-size:13px;font-weight:600;padding:6px 11px;border-radius:8px;cursor:pointer}
+.tabs button.act{background:var(--panel);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.chart{position:relative;height:150px;margin-top:6px}
+.chart.tall{height:180px}
+.clabel{font-size:12px;color:var(--muted);margin-top:14px;display:flex;gap:12px;flex-wrap:wrap}
+.clabel i{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:6px 6px 8px;border-bottom:1px solid var(--line)}
+td{padding:8px 6px;border-bottom:1px solid var(--line)}
+td.r,th.r{text-align:right}
+tr:last-child td{border-bottom:0}
+.tablewrap{overflow-x:auto;margin:0 -6px}
+.alerts div{display:flex;gap:10px;font-size:13px;padding:7px 0;border-bottom:1px solid var(--line)}
+.alerts div:last-child{border-bottom:0}
+.alerts time{color:var(--faint);white-space:nowrap}
+
+details.card summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between}
+details.card summary::-webkit-details-marker{display:none}
+details.card summary h2{margin:0}
+details.card[open] summary{margin-bottom:12px}
+.form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
+@media (min-width:700px){.form{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.form label{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:5px}
+input,select{font:inherit;font-size:16px;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 10px;width:100%;min-width:0}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.hint{font-size:12px;color:var(--faint);margin-top:8px}
+footer{color:var(--faint);font-size:12px;margin-top:18px;text-align:center}
+
+#setup{max-width:520px;margin:8vh auto 0}
+#setup p{color:var(--muted);font-size:14px}
+#setup ol{color:var(--muted);font-size:14px;padding-left:20px}
+#setup .err{color:var(--red);font-size:14px;min-height:20px;margin-top:8px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--bg);
+  padding:10px 16px;border-radius:12px;font-size:14px;opacity:0;transition:all .25s;pointer-events:none;max-width:calc(100% - 32px);z-index:9}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- Підключення -->
+<div id="setup" class="hidden">
+  <div class="card">
+    <h2>Підключення</h2>
+    <p>Дашборд читає дані агента з приватного GitHub Gist. Встав той самий токен GitHub, що вказаний в агенті на планшеті (класичний токен з правом <b>gist</b>).</p>
+    <label class="form" style="display:block"><input id="tokenInput" type="password" autocomplete="off" placeholder="ghp_..." spellcheck="false"></label>
+    <div class="err" id="setupErr"></div>
+    <div class="row"><button class="btn primary" id="connectBtn">Підключити</button></div>
+    <p class="hint">Токен зберігається тільки в цьому браузері і нікуди, крім api.github.com, не надсилається.</p>
+  </div>
+</div>
+
+<!-- Дашборд -->
+<div id="app" class="hidden">
+  <header>
+    <h1>Станція</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="ago" class="num">...</span></div>
+    <button class="iconbtn" id="refreshBtn" title="Оновити" aria-label="Оновити"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+  </header>
+
+  <div id="banners"></div>
+
+  <div class="grid g4">
+    <div class="card">
+      <h2>Батарея</h2>
+      <div class="big num" id="soc">-</div>
+      <div class="bar"><i id="socBar" style="width:0"></i><span class="mark hidden" id="socMark"></span></div>
+      <div class="sub num" id="socSub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <h2>Температура</h2>
+      <div class="big num" id="temp">-</div>
+      <div class="sub" id="tempState">&nbsp;</div>
+      <div class="sub num" id="tempSub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <h2>Навантаження</h2>
+      <div class="big num" id="load">-</div>
+      <div class="sub num" id="loadSub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <h2>Світло</h2>
+      <div class="big" id="grid" style="font-size:26px;line-height:1.25">-</div>
+      <div class="sub num" id="gridSub">&nbsp;</div>
+    </div>
+  </div>
+
+  <section class="grid g2">
+    <div class="card">
+      <h2>Автоматика</h2>
+      <div class="decision" id="decision">-</div>
+      <div class="sub" id="decisionWhy">&nbsp;</div>
+      <div class="row" style="margin-top:14px">
+        <label class="switch"><input type="checkbox" id="autoToggle"><span class="track"></span><span id="autoLbl">Автоматика</span></label>
+      </div>
+      <div class="sub" style="margin-top:14px">Зарядити вручну до</div>
+      <div class="seg" style="margin-top:8px" id="manualSeg">
+        <button class="btn" data-t="60">60%</button><button class="btn" data-t="80">80%</button>
+        <button class="btn" data-t="90">90%</button><button class="btn" data-t="100">100%</button>
+        <button class="btn hidden" id="resetBtn">Скинути</button>
+      </div>
+      <div class="pending" id="pending"></div>
+    </div>
+    <div class="card">
+      <h2>Вистачить на</h2>
+      <div class="tiles" id="tiles"></div>
+      <div class="sub num" id="budget" style="margin-top:12px">&nbsp;</div>
+    </div>
+  </section>
+
+  <section class="card sched">
+    <div class="row"><h2 style="margin:0" id="schedTitle">Графік відключень</h2><span class="spacer"></span><span class="pill" id="nextOut"></span></div>
+    <div id="schedDays"></div>
+    <div class="hint" id="schedUpd"></div>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2 style="margin:0">Історія</h2><span class="spacer"></span>
+      <div class="tabs" id="rangeTabs"><button data-h="1">1 год</button><button data-h="6" class="act">6 год</button><button data-h="24">24 год</button></div>
+    </div>
+    <div class="clabel"><span><i style="background:var(--green)"></i>Заряд, %</span></div>
+    <div class="chart"><canvas id="cSoc"></canvas></div>
+    <div class="clabel"><span><i style="background:var(--blue)"></i>Навантаження, Вт</span><span><i style="background:var(--violet)"></i>Батарея, Вт (+ заряд, − розряд)</span></div>
+    <div class="chart tall"><canvas id="cPow"></canvas></div>
+    <div class="clabel"><span><i style="background:var(--orange)"></i>Температура, °C</span><span><i style="background:var(--red);height:1px"></i>поріг уваги</span></div>
+    <div class="chart"><canvas id="cTemp"></canvas></div>
+  </section>
+
+  <section class="grid g2">
+    <div class="card">
+      <h2>Відключення</h2>
+      <div class="tablewrap"><table class="num"><thead><tr><th>Початок</th><th>Кінець</th><th class="r">Тривалість</th><th class="r">Вт·год</th><th class="r">Заряд</th></tr></thead><tbody id="outTable"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Сповіщення</h2>
+      <div class="alerts" id="alerts"></div>
+    </div>
+  </section>
+
+  <section>
+    <details class="card" id="settingsBox">
+      <summary><h2>Налаштування</h2><span class="pill">змінити</span></summary>
+      <div class="form" id="form">
+        <label>Ціль вдень, %<input type="number" inputmode="numeric" name="day_target" min="10" max="100"></label>
+        <label>Ціль вночі, %<input type="number" inputmode="numeric" name="night_target" min="10" max="100"></label>
+        <label>Перед відключенням, %<input type="number" inputmode="numeric" name="outage_target" min="10" max="100"></label>
+        <label>Довге відключення від, год<input type="number" inputmode="decimal" name="min_outage_hours" min="0.5" max="12" step="0.5"></label>
+        <label>Нічний тариф з<input type="time" name="night_start"></label>
+        <label>Нічний тариф до<input type="time" name="night_end"></label>
+        <label>Потужність заряду, Вт<input type="number" inputmode="numeric" name="charge_power_w" min="200" max="2500" step="100"></label>
+        <label>Черга ВОЕ<select name="queue"></select></label>
+        <label>Температура: увага, °C<input type="number" inputmode="numeric" name="temp_warn" min="30" max="60"></label>
+        <label>Температура: критично, °C<input type="number" inputmode="numeric" name="temp_crit" min="35" max="65"></label>
+        <label>Температура: низька, °C<input type="number" inputmode="numeric" name="temp_low" min="-10" max="15"></label>
+        <label>Сповіщення при заряді нижче, %<input type="number" inputmode="numeric" name="low_soc_alert" min="5" max="60"></label>
+        <label>Режим утримання<select name="hold_mode"><option value="passive0">Пасивний 0 Вт</option><option value="auto">Auto</option><option value="ups">UPS</option></select></label>
+      </div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" id="saveBtn">Зберегти</button><span class="spacer"></span><button class="btn" id="logoutBtn">Відключити цей пристрій</button></div>
+      <p class="hint">При «увага» потужність заряду знижується вдвічі, при «критично» примусовий заряд зупиняється. Сповіщення приходять у Telegram.</p>
+    </details>
+  </section>
+
+  <footer class="num" id="foot"></footer>
+</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+"use strict";
+const LS = {
+  get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){} },
+  del(k){ try { localStorage.removeItem(k); } catch(e){} },
+};
+const API = LS.get("apiBase") || "https://api.github.com";
+const DESC = "marstek-agent";
+let token = LS.get("ghToken"), gistId = LS.get("gistId");
+let S = null, cmdFile = {ping: 0, cmds: []}, rangeH = Number(LS.get("rangeH") || 6);
+let lastFetch = 0, lastPing = 0, fastUntil = 0, pending = new Map(), busy = false, formDirty = false;
+const $ = id => document.getElementById(id);
+const nf = new Intl.NumberFormat("uk-UA", {maximumFractionDigits: 0});
+const fmtW = w => w == null ? "-" : nf.format(Math.round(w));
+const pad = n => String(n).padStart(2, "0");
+const hm = ts => { const d = new Date(ts * 1000); return pad(d.getHours()) + ":" + pad(d.getMinutes()); };
+const dm = ts => { const d = new Date(ts * 1000); return pad(d.getDate()) + "." + pad(d.getMonth() + 1); };
+const dur = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h} год ${pad(m)} хв` : `${m} хв`; };
+const durShort = h => { if (!isFinite(h)) return "∞"; const m = Math.round(h * 60); if (m >= 6000) return "100+<small> год</small>"; const hh = Math.floor(m / 60); return hh ? `${hh}<small> год </small>${m % 60}<small> хв</small>` : `${m}<small> хв</small>`; };
+const now = () => Date.now() / 1000;
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+
+function toast(msg){ const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3500); }
+
+async function gh(method, path, body){
+  const headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"};
+  if (body) headers["Content-Type"] = "application/json";
+  const r = await fetch(API + path, {method, headers, body: body ? JSON.stringify(body) : undefined, cache: "no-store"});
+  if (!r.ok) { const e = new Error("GitHub " + r.status); e.status = r.status; throw e; }
+  return r.status === 204 ? null : r.json();
+}
+
+async function findGist(){
+  const list = await gh("GET", "/gists?per_page=100");
+  const g = (list || []).find(x => x.description === DESC);
+  if (!g) { const e = new Error("nogist"); e.code = "nogist"; throw e; }
+  return g.id;
+}
+
+async function connect(){
+  const v = $("tokenInput").value.trim();
+  if (!v) return;
+  $("setupErr").textContent = ""; $("connectBtn").disabled = true;
+  token = v;
+  try {
+    gistId = await findGist();
+    LS.set("ghToken", token); LS.set("gistId", gistId);
+    showApp(); await load(true); ping(true);
+  } catch (e) {
+    $("setupErr").textContent = e.status === 401 ? "Токен не підходить. Перевір, що він скопійований повністю і має право gist."
+      : e.code === "nogist" ? "Дані агента не знайдено. Спершу запусти агента на планшеті з цим самим токеном (python agent.py --test)."
+      : "Не вдалося підключитись: " + e.message;
+  } finally { $("connectBtn").disabled = false; }
+}
+
+function showSetup(){ $("setup").classList.remove("hidden"); $("app").classList.add("hidden"); }
+function showApp(){ $("setup").classList.add("hidden"); $("app").classList.remove("hidden"); }
+
+async function load(force){
+  if (busy && !force) return;
+  busy = true; $("refreshBtn").classList.add("spin");
+  try {
+    const g = await gh("GET", "/gists/" + gistId);
+    const st = g.files && g.files["state.json"];
+    const cm = g.files && g.files["commands.json"];
+    try { cmdFile = JSON.parse(cm && cm.content || "{}"); } catch(e) { cmdFile = {}; }
+    cmdFile.cmds = cmdFile.cmds || [];
+    const parsed = JSON.parse(st && st.content || "{}");
+    if (parsed && parsed.updated) S = parsed;
+    lastFetch = now();
+    render();
+  } catch (e) {
+    if (e.status === 401) { toast("Токен більше не дійсний"); logout(); return; }
+    if (e.status === 404) { LS.del("gistId"); try { gistId = await findGist(); LS.set("gistId", gistId); } catch(_){} }
+    toast("Немає зв'язку з GitHub");
+  } finally { busy = false; $("refreshBtn").classList.remove("spin"); }
+}
+
+async function writeCommands(extra){
+  // Свіже читання, щоб не затерти команди з іншого пристрою
+  try { const g = await gh("GET", "/gists/" + gistId); const cm = g.files["commands.json"]; cmdFile = JSON.parse(cm && cm.content || "{}"); } catch(e) {}
+  const acked = new Set((S && S.acked) || []);
+  const t = now();
+  const cmds = (cmdFile.cmds || []).filter(c => !acked.has(c.id) && t - (c.ts || 0) < 3600);
+  if (extra) cmds.push(extra);
+  const content = JSON.stringify({ping: t, cmds});
+  await gh("PATCH", "/gists/" + gistId, {files: {"commands.json": {content}}});
+  cmdFile = {ping: t, cmds}; lastPing = t;
+}
+
+async function ping(force){
+  if (!gistId || document.visibilityState !== "visible") return;
+  if (!force && now() - lastPing < 170) return;
+  try { await writeCommands(null); fastUntil = now() + 45; } catch(e) {}
+}
+
+async function sendCmd(cmd, value, label){
+  const id = "w" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  pending.set(id, label);
+  renderPending();
+  try {
+    await writeCommands({id, cmd, value, ts: now()});
+    fastUntil = now() + 90;
+    toast("Команду надіслано. Станція виконає протягом хвилини.");
+  } catch (e) {
+    pending.delete(id); renderPending();
+    toast("Не вдалося надіслати команду");
+  }
+}
+
+function renderPending(){
+  if (S) for (const id of [...pending.keys()]) if ((S.acked || []).includes(id)) {
+    pending.delete(id);
+    if (S.last_cmd && S.last_cmd.id === id) toast(S.last_cmd.text);
+  }
+  const p = $("pending");
+  if (pending.size) { p.textContent = "Очікує виконання: " + [...pending.values()].join(", "); p.classList.add("show"); }
+  else p.classList.remove("show");
+}
+
+function logout(){ LS.del("ghToken"); LS.del("gistId"); token = gistId = null; S = null; showSetup(); }
+
+// ---------- розрахунки ----------
+function usableWh(soc){ if (!S) return 0; return Math.max(0, (soc - S.min_soc) / 100 * S.capacity_wh * (S.eff_discharge || 0.94)); }
+function histSince(sec){ const t = now() - sec; return (S.history || []).filter(p => p[0] >= t); }
+function avgOf(arr, i){ const v = arr.map(p => p[i]).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; }
+function forecastWh(a, b){
+  let wh = 0, t = a; const prof = S.profile || [];
+  while (t < b) { const step = Math.min(900, b - t); const h = new Date(t * 1000).getHours(); wh += Math.max(50, prof[h] || 250) * step / 3600; t += step; }
+  return wh;
+}
+function curBlock(){ const t = now(); return (S.blocks || []).find(b => b[0] <= t && t < b[1]); }
+function nextBlock(){ const t = now(); return (S.blocks || []).find(b => b[0] > t); }
+
+// ---------- рендер ----------
+const TL = {ok: ["норма", "green"], warn: ["висока", "amber"], crit: ["критична", "red"], low: ["низька", "blue"]};
+
+function render(){
+  if (!S) return;
+  const t = now();
+  const stale = t - S.updated > 20 * 60;
+  const online = S.online && !stale;
+  $("dot").className = "dot " + (online ? "ok" : "bad");
+  renderAgo();
+
+  // банери
+  const b = [];
+  if (stale) b.push(["mute", `<b>Агент не на зв'язку</b> <span>з ${dm(S.updated)} ${hm(S.updated)}. Перевір планшет та інтернет.</span>`]);
+  else if (!S.online) b.push(["crit", `<b>Станція не відповідає агенту.</b> <span>Перевір Wi-Fi станції і роутер.</span>`]);
+  if (S.temp_level === "crit") b.push(["crit", `<b>Критична температура ${S.temp.toFixed(1)} °C.</b> <span>Примусовий заряд зупинено. Перевір вентиляцію навколо станції.</span>`]);
+  else if (S.temp_level === "warn") b.push(["warn", `<b>Висока температура ${S.temp.toFixed(1)} °C.</b> <span>Заряд іде на половині потужності.</span>`]);
+  else if (S.temp_level === "low") b.push(["info", `<b>Низька температура ${S.temp.toFixed(1)} °C.</b> <span>При 0 °C і нижче станція не заряджається.</span>`]);
+  if (S.outage) b.push(["info", `<b>Немає світла з ${hm(S.outage.start)}.</b> <span>${dur(t - S.outage.start)}, витрачено ${fmtW(S.outage.wh)} Вт·год.</span>`]);
+  if (S.schedule_error) b.push(["mute", `<b>Графік не оновлюється.</b> <span>${esc(S.schedule_error).slice(0, 120)}</span>`]);
+  $("banners").innerHTML = b.map(([c, h]) => `<div class="banner ${c}"><div>${h}</div></div>`).join("");
+
+  // батарея
+  const soc = S.soc ?? 0;
+  $("soc").innerHTML = `${Math.round(soc)}<small>%</small>`;
+  $("socBar").style.width = Math.min(100, soc) + "%";
+  $("socBar").style.background = soc <= (S.settings?.low_soc_alert ?? 25) ? "var(--red)" : soc < 40 ? "var(--amber)" : "var(--green)";
+  const tgt = S.decision && S.decision.target;
+  if (tgt != null && S.decision.action === "charge") { $("socMark").classList.remove("hidden"); $("socMark").style.left = `calc(${tgt}% - 1px)`; }
+  else $("socMark").classList.add("hidden");
+  const bw = S.bat_w;
+  const bstate = bw == null ? "" : bw > 20 ? `<b style="color:var(--green)">заряд +${fmtW(bw)} Вт</b>` : bw < -20 ? `<b style="color:var(--amber)">розряд ${fmtW(-bw)} Вт</b>` : "очікування";
+  $("socSub").innerHTML = `${fmtW(usableWh(soc))} Вт·год доступно · ${bstate}`;
+
+  // температура
+  const tl = TL[S.temp_level] || TL.ok;
+  const h24 = histSince(86400);
+  const temps = h24.map(p => p[4]).filter(x => x != null);
+  $("temp").className = "big num t-" + (S.temp_level || "ok");
+  $("temp").innerHTML = S.temp == null ? "-" : `${S.temp.toFixed(1)}<small>°C</small>`;
+  $("tempState").innerHTML = `<span class="pill ${tl[1]}">${tl[0]}</span>`;
+  $("tempSub").textContent = temps.length ? `за добу ${Math.min(...temps).toFixed(0)}…${Math.max(...temps).toFixed(0)} °C · увага від ${S.settings.temp_warn} °C` : `увага від ${S.settings.temp_warn} °C`;
+
+  // навантаження
+  const load10 = avgOf(histSince(600), 3) ?? S.load_w;
+  const load24 = avgOf(h24, 3);
+  $("load").innerHTML = `${fmtW(S.load_w)}<small>Вт</small>`;
+  $("loadSub").textContent = load24 != null ? `середнє за добу ${fmtW(load24)} Вт` : " ";
+
+  // світло
+  if (S.outage) {
+    $("grid").innerHTML = `<span style="color:var(--amber)">Немає</span>`;
+    $("gridSub").textContent = `з ${hm(S.outage.start)} · ${dur(t - S.outage.start)}`;
+  } else {
+    const cb = curBlock();
+    $("grid").innerHTML = `<span style="color:var(--green)">Є</span>`;
+    $("gridSub").textContent = cb ? `за графіком мало б не бути до ${hm(cb[1])}` : (S.grid_w != null ? `з мережі ${fmtW(S.grid_w)} Вт` : " ");
+  }
+
+  // автоматика
+  const d = S.decision || {};
+  const names = {charge: "Заряд", hold: "Утримання заряду", off: "Автоматика вимкнена", outage: "Живлення від батареї", init: "Запуск"};
+  $("decision").textContent = (names[d.action] || d.action || "-") + (d.action === "charge" && d.target != null ? ` до ${d.target}%` : "");
+  $("decisionWhy").textContent = d.reason ? d.reason.charAt(0).toUpperCase() + d.reason.slice(1) : " ";
+  $("autoToggle").checked = !!S.enabled;
+  $("autoLbl").textContent = S.enabled ? "Автоматика увімкнена" : "Автоматика вимкнена";
+  document.querySelectorAll("#manualSeg [data-t]").forEach(x => x.classList.toggle("on", S.force_target === Number(x.dataset.t)));
+  $("resetBtn").classList.toggle("hidden", S.force_target == null);
+  renderPending();
+
+  // вистачить на
+  const night = (S.profile || []).slice(0, 6);
+  const nightW = night.length ? night.reduce((a, b) => a + b, 0) / night.length : null;
+  const uw = usableWh(soc);
+  const tiles = [["Як зараз", load10, "середнє за 10 хв"], ["Як за добу", load24, "середнє"], ["Як уночі", nightW, "за профілем"]];
+  $("tiles").innerHTML = tiles.map(([k, w, s]) => `<div class="tile"><div class="k">${k}</div><div class="v num">${w ? durShort(uw / w) : "-"}</div><div class="s num">${w ? fmtW(w) + " Вт · " + s : s}</div></div>`).join("");
+
+  const cb = curBlock(), nb = nextBlock();
+  let budget = " ";
+  if (S.outage && cb) {
+    const left = cb[1] - t;
+    budget = `До ${hm(cb[1])} можна витрачати в середньому до <b>${fmtW(uw / (left / 3600))} Вт</b> (бюджет ${fmtW(uw)} Вт·год).`;
+  } else if (nb) {
+    const need = forecastWh(nb[0], nb[1]);
+    const after = Math.round(soc - need / (S.capacity_wh * (S.eff_discharge || 0.94)) * 100);
+    budget = `Відключення ${hm(nb[0])}–${hm(nb[1])}: з поточним зарядом на кінець залишиться приблизно <b>${Math.max(0, after)}%</b>` + (after <= S.min_soc ? `, <b style="color:var(--amber)">не вистачить</b>.` : ".");
+  }
+  $("budget").innerHTML = budget;
+
+  renderSchedule();
+  renderCharts();
+  renderOutages();
+  renderAlerts();
+  if (!formDirty) fillForm();
+  $("foot").textContent = [S.device, S.fw ? "прошивка " + S.fw : null, S.mode ? "режим " + S.mode : null, S.rssi ? "Wi-Fi " + S.rssi + " дБм" : null, "агент v" + S.v].filter(Boolean).join(" · ");
+}
+
+function renderAgo(){
+  if (!S) return;
+  const a = now() - S.updated;
+  $("ago").textContent = a < 60 ? "щойно" : a < 3600 ? `${Math.floor(a / 60)} хв тому` : `${hm(S.updated)}`;
+}
+
+function renderSchedule(){
+  $("schedTitle").textContent = "Графік відключень · черга " + S.queue;
+  const t = now(), base = new Date(); base.setHours(0, 0, 0, 0);
+  const days = [0, 1].map(i => { const a = new Date(base); a.setDate(a.getDate() + i); const s = a.getTime() / 1000; const e = new Date(a); e.setDate(e.getDate() + 1); return [s, e.getTime() / 1000, i ? "Завтра" : "Сьогодні"]; });
+  let html = "";
+  for (const [ds, de, name] of days) {
+    const bl = (S.blocks || []).filter(b => b[1] > ds && b[0] < de);
+    const bars = bl.map(b => { const a = Math.max(b[0], ds), z = Math.min(b[1], de); return `<span class="off" style="left:${(a - ds) / 864}%;width:${(z - a) / 864}%"></span>`; }).join("");
+    const nowm = t >= ds && t < de ? `<span class="now" style="left:${(t - ds) / 864}%"></span>` : "";
+    html += `<div class="day"><span class="lbl">${name}</span><div class="track24">${bars}${nowm}</div></div>`;
+    html += `<div class="slist num">${bl.length ? "Без світла: " + bl.map(b => `${hm(Math.max(b[0], ds))}–${b[1] >= de ? "24:00" : hm(b[1])}`).join(", ") : "Відключень немає"}</div>`;
+  }
+  html += `<div class="ticks num"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>`;
+  $("schedDays").innerHTML = html;
+  const nb = nextBlock(), cb = curBlock();
+  $("nextOut").textContent = cb ? `за графіком до ${hm(cb[1])}` : nb ? `наступне о ${hm(nb[0])}` : "відключень немає";
+  $("nextOut").className = "pill " + (cb ? "amber" : nb ? "blue" : "green");
+  $("schedUpd").textContent = S.schedule_updated ? "Графік ВОЕ оновлено " + S.schedule_updated : "";
+}
+
+// ---------- графіки ----------
+const charts = {};
+function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function makeChart(id, datasets, yopts){
+  const grid = css("--line"), tick = css("--faint");
+  return new Chart($(id), {
+    type: "line",
+    data: {datasets},
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
+      interaction: {mode: "index", intersect: false},
+      plugins: {legend: {display: false}, tooltip: {callbacks: {title: it => it.length ? hm(it[0].parsed.x / 1000) : ""}}},
+      elements: {point: {radius: 0, hitRadius: 6}, line: {borderWidth: 2, tension: .25}},
+      scales: {
+        x: {type: "linear", grid: {color: grid}, border: {display: false}, ticks: {color: tick, maxTicksLimit: 7, callback: v => hm(v / 1000)}},
+        y: Object.assign({grid: {color: grid}, border: {display: false}, ticks: {color: tick, maxTicksLimit: 5}}, yopts || {}),
+      },
+    },
+  });
+}
+function renderCharts(){
+  if (typeof Chart === "undefined") return;
+  const pts = histSince(rangeH * 3600);
+  const xmin = (now() - rangeH * 3600) * 1000, xmax = now() * 1000;
+  const ser = i => pts.filter(p => p[i] != null).map(p => ({x: p[0] * 1000, y: p[i]}));
+  if (!charts.soc) {
+    charts.soc = makeChart("cSoc", [{data: [], borderColor: css("--green"), backgroundColor: css("--green-soft"), fill: true}], {min: 0, max: 100});
+    charts.pow = makeChart("cPow", [{data: [], borderColor: css("--blue")}, {data: [], borderColor: css("--violet")}]);
+    charts.temp = makeChart("cTemp", [{data: [], borderColor: css("--orange")}, {data: [], borderColor: css("--red"), borderDash: [4, 4], borderWidth: 1}]);
+  }
+  charts.soc.data.datasets[0].data = ser(1);
+  charts.pow.data.datasets[0].data = ser(3);
+  charts.pow.data.datasets[1].data = ser(2);
+  const tw = S.settings.temp_warn;
+  charts.temp.data.datasets[0].data = ser(4);
+  charts.temp.data.datasets[1].data = [{x: xmin, y: tw}, {x: xmax, y: tw}];
+  const tv = ser(4).map(p => p.y);
+  charts.temp.options.scales.y.suggestedMin = tv.length ? Math.min(...tv) - 3 : 15;
+  charts.temp.options.scales.y.suggestedMax = Math.max(tw + 2, tv.length ? Math.max(...tv) + 3 : 35);
+  for (const c of [charts.soc, charts.pow, charts.temp]) { c.options.scales.x.min = xmin; c.options.scales.x.max = xmax; c.update("none"); }
+}
+
+function renderOutages(){
+  const rows = (S.outages || []).slice().reverse().slice(0, 12);
+  const live = S.outage ? `<tr><td>${dm(S.outage.start)} ${hm(S.outage.start)}</td><td>триває</td><td class="r">${dur(now() - S.outage.start)}</td><td class="r">${fmtW(S.outage.wh)}</td><td class="r">${Math.round(S.outage.soc_start)}% → ${Math.round(S.soc)}%</td></tr>` : "";
+  $("outTable").innerHTML = live + rows.map(o => `<tr><td>${dm(o.start)} ${hm(o.start)}</td><td>${hm(o.end)}</td><td class="r">${dur(o.end - o.start)}</td><td class="r">${fmtW(o.wh)}</td><td class="r">${Math.round(o.soc_start)}% → ${Math.round(o.soc_end)}%</td></tr>`).join("")
+    || `<tr><td colspan="5" style="color:var(--muted)">Агент ще не зафіксував жодного відключення</td></tr>`;
+}
+
+function renderAlerts(){
+  const a = (S.alerts || []).slice().reverse().slice(0, 10);
+  const col = {crit: "var(--red)", warn: "var(--amber)", info: "var(--muted)"};
+  $("alerts").innerHTML = a.map(x => `<div><time class="num">${dm(x.ts)} ${hm(x.ts)}</time><span style="color:${x.level === "info" ? "var(--text)" : col[x.level]}">${esc(x.text)}</span></div>`).join("")
+    || `<div style="color:var(--muted)">Сповіщень ще не було</div>`;
+}
+
+// ---------- налаштування ----------
+const qsel = document.querySelector('[name="queue"]');
+for (let a = 1; a <= 6; a++) for (const b of [1, 2]) qsel.add(new Option(`${a}.${b}`, `${a}.${b}`));
+function fillForm(){
+  if (!S || !S.settings) return;
+  for (const el of $("form").querySelectorAll("[name]")) { const v = S.settings[el.name]; if (v != null) el.value = v; }
+}
+$("form").addEventListener("input", () => { formDirty = true; });
+$("saveBtn").onclick = () => {
+  if (!S) return;
+  const out = {};
+  for (const el of $("form").querySelectorAll("[name]")) {
+    let v = el.value; if (v === "") continue;
+    if (el.type === "number") v = Number(v);
+    if (String(S.settings[el.name]) !== String(v)) out[el.name] = v;
+  }
+  if (out.temp_crit != null || out.temp_warn != null) {
+    const w = out.temp_warn ?? S.settings.temp_warn, c = out.temp_crit ?? S.settings.temp_crit;
+    if (c <= w) { toast("Критичний поріг має бути вищим за поріг уваги"); return; }
+  }
+  if (!Object.keys(out).length) { toast("Змін немає"); return; }
+  formDirty = false;
+  sendCmd("set", out, "налаштування");
+};
+$("logoutBtn").onclick = () => { if (confirm("Видалити токен з цього пристрою?")) logout(); };
+
+// ---------- події ----------
+$("connectBtn").onclick = connect;
+$("tokenInput").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+$("refreshBtn").onclick = () => { load(true); ping(true); };
+$("autoToggle").onchange = e => sendCmd(e.target.checked ? "on" : "off", null, e.target.checked ? "увімкнення автоматики" : "вимкнення автоматики");
+document.querySelectorAll("#manualSeg [data-t]").forEach(x => x.onclick = () => sendCmd("charge", Number(x.dataset.t), `заряд до ${x.dataset.t}%`));
+$("resetBtn").onclick = () => sendCmd("auto", null, "скидання ручної цілі");
+document.querySelectorAll("#rangeTabs button").forEach(x => {
+  x.classList.toggle("act", Number(x.dataset.h) === rangeH);
+  x.onclick = () => { rangeH = Number(x.dataset.h); LS.set("rangeH", rangeH); document.querySelectorAll("#rangeTabs button").forEach(y => y.classList.toggle("act", y === x)); renderCharts(); };
+});
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && token && gistId) { load(true); ping(true); } });
+
+setInterval(() => {
+  if (!token || !gistId || document.visibilityState !== "visible") return;
+  renderAgo();
+  const every = now() < fastUntil ? 5 : 20;
+  if (now() - lastFetch >= every) load();
+  ping(false);
+}, 1000);
+
+if (token && gistId) { showApp(); load(true); ping(true); }
+else if (token) { $("tokenInput").value = token; showSetup(); connect(); }
+else showSetup();
+})();
+</script>
+</body>
+</html>
