@@ -1006,7 +1006,7 @@ def build_public_state():
 # ---------------- Цикл ----------------
 def main():
     if not CFG.get("marstek_ip"):
-        print("Спершу запусти: python agent.py --setup")
+        print("Спершу запусти: python agent.py setup")
         sys.exit(1)
     log(f"Агент v{VERSION} запущено, станція {CFG['marstek_ip']}, черга {CFG['queue']}, час {tz_line()}")
     tg_send(f"Агент Marstek v{VERSION} запущено\n{HELP}")
@@ -1171,9 +1171,11 @@ def selftest():
 
 
 if __name__ == "__main__":
-    if "--setup" in sys.argv:
+    # Клавіатура Android часто міняє "--" на тире, тому приймаємо setup, -setup, --setup, —setup
+    ARGS = [a.lstrip("-\u2014\u2013\u2012").lower() for a in sys.argv[1:]]
+    if "setup" in ARGS:
         setup()
-    elif "--test" in sys.argv:
+    elif "test" in ARGS:
         selftest()
     else:
         main()
