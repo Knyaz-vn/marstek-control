@@ -1188,7 +1188,7 @@ def probe(ip, port, local_port, method, params, timeout=8):
             data, addr = s.recvfrom(16384)
             if b'"method"' not in data:   # пропускаємо власне відлуння
                 break
-        return f"OK за {time.time() - t0:.1f} с від {addr[0]}:{addr[1]} (локальний порт {bound}): {data.decode(errors='ignore')[:300]}"
+        return f"OK за {time.time() - t0:.1f} с від {addr[0]}:{addr[1]} (локальний порт {bound}): {data.decode(errors='ignore')[:2000]}"
     except socket.timeout:
         return "немає відповіді"
     except Exception as e:
@@ -1226,6 +1226,31 @@ def diag():
     print("\nСкинь скрін цього результату.")
 
 
+def dump():
+    """Сирі дані станції: всі поля, які вона віддає. Для налагодження."""
+    ip, port = CFG.get("marstek_ip"), int(CFG.get("marstek_port", 30000))
+    print(f"{dt.datetime.now():%d.%m %H:%M:%S}  станція {ip}:{port}")
+    calls = [("ES.GetStatus", {"id": 0}), ("Bat.GetStatus", {"id": 0}), ("ES.GetMode", {"id": 0}),
+             ("EM.GetStatus", {"id": 0})]
+    for method, params in calls:
+        res = None
+        for lp in (0, 30000):
+            raw = probe(ip, port, lp, method, params, timeout=6)
+            if raw.startswith("OK"):
+                try:
+                    res = json.loads(raw[raw.index("{"):]).get("result")
+                except ValueError:
+                    res = raw
+                break
+            time.sleep(0.5)
+        print(f"\n{method}:")
+        if isinstance(res, dict):
+            print("  " + "  ".join(f"{k}={v}" for k, v in res.items() if k != "id"))
+        else:
+            print(f"  {res or 'немає відповіді'}")
+        time.sleep(0.5)
+
+
 if __name__ == "__main__":
     # Клавіатура Android часто міняє "--" на тире, тому приймаємо setup, -setup, --setup, —setup
     ARGS = [a.lstrip("-\u2014\u2013\u2012").lower() for a in sys.argv[1:]]
@@ -1235,5 +1260,7 @@ if __name__ == "__main__":
         selftest()
     elif "diag" in ARGS:
         diag()
+    elif "dump" in ARGS:
+        dump()
     else:
         main()

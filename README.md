@@ -152,6 +152,7 @@ nohup sh start.sh > /dev/null 2>&1 &   # запустити
 sh update.sh             # оновити код з GitHub і перезапустити
 python agent.py test   # перевірка зв'язку
 python agent.py diag   # детальна діагностика зв'язку зі станцією
+python agent.py dump   # сирі дані станції (всі поля)
 ```
 
 Якщо ти змінив файли в репозиторії GitHub (наприклад, нову версію агента), на планшеті достатньо `sh update.sh`.
