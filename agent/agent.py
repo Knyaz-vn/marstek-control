@@ -1512,7 +1512,8 @@ def modetest():
     print("    режим після таймера:", rpc("ES.GetMode", {"id": 0}).get("mode"))
     back = str(m0 or "").lower()
     if back.startswith("manual"):
-        print("3/3 Станція була в режимі Manual (так API показує UPS з додатку). Поверни UPS у додатку.")
+        print("3/3 Станція була в режимі Manual. Лишаю її в пасивному режимі: далі нею керуватиме агент.")
+        print("    У додатку базовим лишай «Ручний». Запуск керування: python agent.py on, потім nohup sh start.sh ...")
     elif back.startswith("ups") or back.startswith("auto"):
         print(f"3/3 Повертаю режим {m0}. Знову стеж за світлом.")
         print("    відповідь станції:", set_ups() if back.startswith("ups") else set_auto())
