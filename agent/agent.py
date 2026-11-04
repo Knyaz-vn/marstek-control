@@ -54,7 +54,7 @@ DEFAULTS = {
     "reserve_pct": 10,
     "hysteresis": 3,
     "hold_mode": "passive0",
-    "off_mode": "ups",
+    "off_mode": "none",
 
     "queue": "3.1",
     "schedule_url": "https://raw.githubusercontent.com/vn-progr/gpv-voe-vinnytsia/main/data/Vinnytsiaoblenerho.json",
@@ -377,7 +377,11 @@ def apply_hold():
 
 
 def apply_off():
-    set_ups() if CFG["off_mode"] == "ups" else set_auto()
+    # За замовчуванням нічого не перемикаємо: на прошивці 150 перехід у UPS теж може перезавантажити станцію
+    if CFG["off_mode"] == "ups":
+        set_ups()
+    elif CFG["off_mode"] == "auto":
+        set_auto()
 
 
 # ---------------- Графік відключень ----------------
@@ -887,7 +891,7 @@ def control_step():
     since = now_ts() - RT["last_sent"]
 
     target_mode = {"charge": "passive", "hold": {"passive0": "passive"}.get(CFG["hold_mode"], CFG["hold_mode"]),
-                   "off": CFG["off_mode"]}.get(action)
+                   "off": None if CFG["off_mode"] == "none" else CFG["off_mode"]}.get(action)
     if target_mode and (changed or RT.get("pending") or since > (CFG["resend_sec"] if action == "charge" else CFG["hold_resend_sec"])):
         # Перед кожною командою дізнаємось поточний режим: станція могла перезавантажитись чи змінити його сама
         try:
@@ -997,7 +1001,8 @@ def handle_command(cmd, value=None):
     if cmd == "off":
         STATE["enabled"] = False
         RT["last_key"] = None
-        return "Автоматику вимкнено. Агент лише стежить, станція працює у своєму режимі (UPS)"
+        return ("Автоматику вимкнено. Агент лише стежить і режим не чіпає. "
+                "Щоб повернути UPS, вибери його в додатку Marstek, краще коли є світло")
     if cmd == "charge":
         v = max(10, min(100, int(float(value))))
         STATE["force_target"] = v
@@ -1491,20 +1496,6 @@ def modetest():
     print("\nГотово. Скинь скрін і напиши, чи блимало світло або клацало реле на кроці 1, 2 чи 3.")
 
 
-def ups_cmd():
-    """Повернути станцію в UPS через API і перевірити, чи вона заряджається. Тільки коли є світло."""
-    before = rpc("ES.GetMode", {"id": 0}).get("mode")
-    print(f"Режим зараз: {before}. Надсилаю UPS...")
-    print("  відповідь станції:", set_ups())
-    time.sleep(20)
-    t = read_station()
-    after = rpc("ES.GetMode", {"id": 0}).get("mode")
-    grid = t.get("grid_w")
-    state = "заряджається від мережі" if grid is not None and grid < -50 else "не заряджається"
-    print(f"Режим після: {after}, заряд {t.get('soc')}%, мережа {grid} Вт ({state})")
-    print("Подивись, що показує додаток Marstek у «Режим роботи», і скинь скрін.")
-
-
 if __name__ == "__main__":
     # Клавіатура Android часто міняє "--" на тире, тому приймаємо setup, -setup, --setup, —setup
     ARGS = [a.lstrip("-\u2014\u2013\u2012").lower() for a in sys.argv[1:]]
@@ -1523,7 +1514,8 @@ if __name__ == "__main__":
         dump()
     elif "modetest" in ARGS:
         modetest()
-    elif "ups" in ARGS:
-        ups_cmd()
+
+    elif ARGS and ARGS[0] not in ("run", "start"):
+        print("Невідома команда. Доступні: setup, test, diag, dump, modetest, on, off. Без команди запускається агент.")
     else:
         main()
