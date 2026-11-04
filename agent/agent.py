@@ -288,6 +288,11 @@ def read_station():
             time.sleep(0.25)
             d = rpc("Marstek.GetDevice", {"ble_mac": "0"})
             t["device"], t["fw"] = d.get("device"), d.get("ver")
+            mac = d.get("wifi_mac") or d.get("ble_mac")
+            if mac and USER_CFG.get("marstek_mac") != mac:
+                USER_CFG["marstek_mac"] = mac
+                save_json(CFG_PATH, USER_CFG)
+                rebuild_cfg()
         except Exception:
             pass
     for k in ("rssi", "device", "fw"):
@@ -641,15 +646,38 @@ def calibrate_sign(t):
 
 
 # ---------------- Основний крок ----------------
+def rediscover():
+    """Якщо роутер видав станції нову IP-адресу, знаходимо її і переналаштовуємось."""
+    found = discover()
+    mac = CFG.get("marstek_mac")
+    match = [f for f in found if mac and f.get("mac") == mac] or (found if len(found) == 1 else [])
+    if not match:
+        log("Пошук станції в мережі: не знайдено")
+        return False
+    ip = match[0]["ip"]
+    if ip == CFG["marstek_ip"]:
+        return False
+    old = CFG["marstek_ip"]
+    USER_CFG["marstek_ip"] = ip
+    save_json(CFG_PATH, USER_CFG)
+    rebuild_cfg()
+    alert("info", f"Станція змінила IP-адресу з {old} на {ip}. Агент переналаштувався сам.")
+    return True
+
+
 def sample_step():
     try:
         t = read_station()
     except Exception as e:
         RT["fail_count"] += 1
+        log(f"Опитування станції: {e}")
+        if RT["fail_count"] >= 2 and now_ts() - RT.get("disc_ts", 0) > 300:
+            RT["disc_ts"] = now_ts()
+            if rediscover():
+                return None
         if RT["online"] and RT["fail_count"] >= 3:
             RT["online"] = False
             alert("warn", f"Станція не відповідає ({e}). Перевір Wi-Fi і живлення роутера.")
-        log(f"Опитування станції: {e}")
         return None
     if not RT["online"] and RT["last_seen"]:
         alert("info", "Зв'язок зі станцією відновлено.")
@@ -1026,18 +1054,21 @@ def ask(prompt, default=""):
     return s or str(default)
 
 
-def discover():
+def discover(port=None):
+    """Шукає станції Marstek у мережі широкомовним запитом."""
+    port = int(port or CFG.get("marstek_port") or 30000)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     s.settimeout(3)
     found = []
     try:
-        s.bind(("", 30000))
+        s.bind(("", port))
     except OSError:
         s.bind(("", 0))
     try:
         msg = json.dumps({"id": 1, "method": "Marstek.GetDevice", "params": {"ble_mac": "0"}}).encode()
-        s.sendto(msg, ("255.255.255.255", 30000))
+        s.sendto(msg, ("255.255.255.255", port))
         end = time.time() + 3
         while time.time() < end:
             try:
@@ -1048,10 +1079,11 @@ def discover():
                 r = json.loads(data.decode()).get("result", {})
             except ValueError:
                 continue
-            if r.get("device"):
-                found.append((addr[0], r.get("device"), r.get("ver")))
+            if r.get("device") and addr[0] not in [f["ip"] for f in found]:
+                found.append({"ip": addr[0], "device": r.get("device"), "ver": r.get("ver"),
+                              "mac": r.get("wifi_mac") or r.get("ble_mac")})
     except Exception as e:
-        print(f"Пошук не вдався: {e}")
+        log(f"Пошук станції не вдався: {e}")
     finally:
         s.close()
     return found
@@ -1063,9 +1095,13 @@ def setup():
     print("1. Станція")
     found = discover()
     if found:
-        for ip, dev, ver in found:
-            print(f"   знайдено {dev} (прошивка {ver}) на {ip}")
-    cfg["marstek_ip"] = ask("   IP станції", found[0][0] if found else cfg.get("marstek_ip", ""))
+        for f in found:
+            print(f"   знайдено {f['device']} (прошивка {f['ver']}) на {f['ip']}")
+    else:
+        print("   автоматично не знайдено, введи IP з додатку Marstek або роутера")
+    cfg["marstek_ip"] = ask("   IP станції", found[0]["ip"] if found else cfg.get("marstek_ip", ""))
+    if found and found[0].get("mac"):
+        cfg["marstek_mac"] = found[0]["mac"]
     cfg["marstek_port"] = int(ask("   UDP порт Open API", cfg.get("marstek_port", 30000)))
     print("\n2. Графік відключень")
     cfg["queue"] = ask("   Твоя черга (наприклад 3.1)", cfg.get("queue", "3.1"))
