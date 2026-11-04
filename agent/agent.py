@@ -44,7 +44,8 @@ DEFAULTS = {
     "eff_discharge": 0.94,
 
     "day_target": 50,
-    "night_target": 100,
+    "night_target": 90,
+    "full_charge_day": 6,
     "outage_target": 80,
     "min_outage_hours": 3,
     "night_start": "23:00",
@@ -67,6 +68,7 @@ DEFAULTS = {
     "default_load_w": 250,
     "outage_detect_w": 15,
     "est_windows": [360, 900, 1800],
+    "grid_flat_sec": 600,
 
     "github_token": "",
     "gist_id": "",
@@ -84,8 +86,8 @@ DEFAULTS = {
     "history_step_sec": 120,
     "passive_seconds": 900,
     "resend_sec": 300,
-    "hold_seconds": 3600,
-    "hold_resend_sec": 3000,
+    "hold_seconds": 7200,
+    "hold_resend_sec": 3300,
 }
 
 # Що можна міняти з дашборда і Telegram: ключ -> (мін, макс, тип)
@@ -313,6 +315,7 @@ def read_station():
         RT["mode_ts"] = now_ts()
         try:
             t["mode"] = rpc("ES.GetMode", {"id": 0}).get("mode")
+            note_mode(t["mode"])
         except Exception:
             pass
     if now_ts() - RT.get("info_ts", 0) >= 1800:
@@ -338,15 +341,29 @@ def read_station():
 
 def set_passive(power_w, seconds):
     cfg = {"mode": "Passive", "passive_cfg": {"power": int(power_w), "cd_time": int(seconds)}}
+    RT["expected_mode"] = "passive"
     return rpc("ES.SetMode", {"id": 0, "config": cfg})
 
 
 def set_auto():
+    RT["expected_mode"] = "auto"
     return rpc("ES.SetMode", {"id": 0, "config": {"mode": "Auto", "auto_cfg": {"enable": 1}}})
 
 
 def set_ups():
+    RT["expected_mode"] = "ups"
     return rpc("ES.SetMode", {"id": 0, "config": {"mode": "UPS", "ups_cfg": {"enable": 1}}})
+
+
+def note_mode(mode):
+    """Станція сама змінила режим (перезавантаження чи зміна в додатку): довіру до «світло є» скидаємо."""
+    exp = RT.get("expected_mode")
+    if mode and exp and not str(mode).lower().startswith(exp):
+        log(f"Станція сама перейшла в режим {mode} (перезавантаження або зміна в додатку)")
+        RT["grid_ok_ts"] = 0
+        RT["grid_reset_ts"] = now_ts()
+        RT["expected_mode"] = None
+        RT["last_key"] = None
 
 
 def apply_hold():
@@ -495,6 +512,9 @@ def decide(now, soc):
         target, reason = int(STATE["force_target"]), "ручна ціль"
     elif is_night(now):
         target, reason = int(CFG["night_target"]), "нічний тариф"
+        night_day = (now - dt.timedelta(days=1)) if now.hour * 60 + now.minute < parse_hm(CFG["night_end"]) else now
+        if CFG.get("full_charge_day") is not None and night_day.weekday() == int(CFG["full_charge_day"]):
+            target, reason = 100, "щотижневий повний заряд для калібрування батареї"
     else:
         target, reason = int(CFG["day_target"]), "денний тариф"
 
@@ -624,7 +644,8 @@ def rem_trend(ts, window):
     w_reg = sum((p[0] - mx) * (p[1] - my) for p in pts) / sxx * 3600 if sxx else 0.0
     return {"span": span, "w": round(w), "w_reg": round(w_reg), "drop": drop, "rise": rise, "down_steps": len(downs),
             "biggest": max((d for _, d in downs), default=0), "interval": interval,
-            "first_down": downs[0][0] if downs else None, "last_down": downs[-1][0] if downs else None}
+            "first_down": downs[0][0] if downs else None, "last_down": downs[-1][0] if downs else None,
+            "last_up": ups[-1][0] if ups else None}
 
 
 def last_down_ts():
@@ -637,9 +658,10 @@ def last_down_ts():
 
 def outage_evidence(t):
     """'out' світла нема, 'grid' світло точно є, 'idle' батарея не розряджається, None невідомо."""
-    ctr, prev = t.get("grid_ctr"), RT.get("grid_ctr_prev")
-    RT["grid_ctr_prev"] = ctr
-    if ctr is not None and prev is not None and ctr > prev:
+    ctr, prev, prev_ts = t.get("grid_ctr"), RT.get("grid_ctr_prev"), RT.get("grid_ctr_prev_ts", 0)
+    RT["grid_ctr_prev"], RT["grid_ctr_prev_ts"] = ctr, t["ts"]
+    reset = RT.get("grid_reset_ts", 0)
+    if ctr is not None and prev is not None and ctr > prev and prev_ts > reset:
         return "grid", None              # станція бере або віддає енергію в мережу
     load = max(t.get("load_w") or 0.0, 0.0)
     thr = max(CFG["outage_detect_w"], 0.9 * load)   # під час відключення розряд не менший за навантаження
@@ -654,8 +676,10 @@ def outage_evidence(t):
         tr = rem_trend(t["ts"], win)
         if not tr:
             continue
-        if tr["rise"] >= 2 and tr["rise"] > tr["drop"]:
-            return "grid", None          # залишок росте: йде заряд від мережі
+        if (tr["rise"] >= 2 and tr["rise"] > tr["drop"] and tr["last_up"]
+                and tr["last_up"] > reset + CFG["bat_every_sec"]
+                and t["ts"] - tr["last_up"] <= max(2.5 * CFG["bat_every_sec"], 120)):
+            return "grid", None          # залишок щойно зріс: йде заряд від мережі
         if not in_block and win < 900:
             continue
         if tr["down_steps"] < 3 or not tr["interval"] or tr["span"] < 0.7 * win:
@@ -667,8 +691,33 @@ def outage_evidence(t):
     return None, None
 
 
+def update_grid_confirmation(t, ev):
+    """Чи точно є світло. Без цього агент не перемикає станцію: зміна режиму без мережі її перезавантажує."""
+    hist = RT.get("rem_hist", [])
+    if len(hist) >= 2 and hist[-1][1] != hist[-2][1]:
+        step = abs(hist[-1][1] - hist[-2][1])
+        STATE["rem_res"] = min(step, STATE.get("rem_res") or step)
+    if RT["outage"]:
+        RT["grid_ok_ts"] = 0
+        return
+    grid_w = t.get("grid_w")
+    if ev == "grid" or (grid_w is not None and abs(grid_w) >= 5):
+        RT["grid_ok_ts"] = t["ts"]
+        return
+    load = max(t.get("load_w") or 0.0, 0.0)
+    if load >= 12 and (STATE.get("rem_res") or 99) <= 2:
+        tr = rem_trend(t["ts"], min(CFG["grid_flat_sec"], t["ts"] - RT.get("grid_reset_ts", 0)))
+        if tr and tr["span"] >= 0.8 * CFG["grid_flat_sec"] and tr["down_steps"] == 0:
+            RT["grid_ok_ts"] = t["ts"]   # навантаження є, а батарея не розряджається: живить мережа
+
+
+def grid_confirmed(max_age):
+    return not RT["outage"] and now_ts() - RT.get("grid_ok_ts", 0) <= max_age
+
+
 def track_outage(t):
     ev, tr = outage_evidence(t)
+    update_grid_confirmation(t, ev)
     load = max(t.get("load_w") or 0.0, 0.0)
     bat = t.get("bat_w")
     discharge = -bat if bat is not None and bat < 0 else 0.0
@@ -813,6 +862,9 @@ def sample_step():
         return None
     if not RT["online"] and RT["last_seen"]:
         alert("info", "Зв'язок зі станцією відновлено.")
+        RT["mode_ts"] = 0   # після перезавантаження станція могла повернутись у свій режим
+        RT["grid_ok_ts"] = 0
+        RT["grid_reset_ts"] = now_ts()
     RT["online"], RT["fail_count"], RT["last_seen"] = True, 0, t["ts"]
     RT["tele"] = t
     calibrate_sign(t)
@@ -834,32 +886,59 @@ def control_step():
     changed = key != RT["last_key"]
     since = now_ts() - RT["last_sent"]
 
+    target_mode = {"charge": "passive", "hold": {"passive0": "passive"}.get(CFG["hold_mode"], CFG["hold_mode"]),
+                   "off": CFG["off_mode"]}.get(action)
+    if target_mode and (changed or RT.get("pending") or since > (CFG["resend_sec"] if action == "charge" else CFG["hold_resend_sec"])):
+        # Перед кожною командою дізнаємось поточний режим: станція могла перезавантажитись чи змінити його сама
+        try:
+            RT["mode_ts"] = now_ts()
+            fresh = rpc("ES.GetMode", {"id": 0}).get("mode")
+            t["mode"] = fresh or t.get("mode")
+            note_mode(fresh)
+        except Exception:
+            fresh = None
+        cur = str(t.get("mode") or "").lower()
+        switch = not cur.startswith(target_mode.lower())
+        if not fresh:
+            target_mode = None          # режим невідомий: наосліп нічого не надсилаємо
+        elif action == "off" and not switch:
+            target_mode = None          # станція вже у своєму режимі, нічого не робимо
+        elif not grid_confirmed(60 if switch else 900):
+            # світло не підтверджене: команду не надсилаємо, станція лишається як є
+            d = dict(d, reason=d["reason"] + " · чекаю підтвердження, що світло є")
+            target_mode = None
+            RT["pending"] = True
+            if switch and not RT.get("wait_logged"):
+                RT["wait_logged"] = True
+                log(f"Не перемикаю {cur or '?'} -> {action}: світло не підтверджене")
+        else:
+            RT["wait_logged"] = False
+            RT["pending"] = False
+    else:
+        target_mode = None
+
     try:
         if action == "charge":
             if not RT["charging"]:
                 RT["charge_start_soc"] = soc
-            if changed or since > CFG["resend_sec"]:
+            if target_mode:
                 set_passive(CFG["charge_sign"] * charge_power(), CFG["passive_seconds"])
                 RT["last_sent"] = now_ts()
             start = RT["charge_start_soc"]
-            if start is not None and soc <= start - 2:
+            if start is not None and soc <= start - 2 and grid_confirmed(300):
                 STATE["enabled"] = False
-                apply_off()
-                alert("crit", "Під час примусового заряду батарея розряджається. Автоматику вимкнено. "
+                set_passive(0, CFG["hold_seconds"])
+                alert("crit", "Під час примусового заряду батарея розряджається, хоча світло є. Автоматику вимкнено. "
                               "Перевір charge_sign у config.json (-1 або 1).")
                 return
         elif action == "outage":
-            pass   # під час відключення станцію не чіпаємо: зміна режиму в автономній роботі може смикнути реле
-        elif action == "hold":
-            refresh = CFG["hold_resend_sec"] if CFG["hold_mode"] == "passive0" else 3600
-            if changed or since > refresh:
-                apply_hold()
-                RT["last_sent"] = now_ts()
-        elif action == "off" and changed:
-            cur = str(t.get("mode") or "").lower()
-            if not RT["outage"] and cur and cur != CFG["off_mode"].lower():
-                apply_off()   # повертаємо станцію в її звичайний режим, лише якщо вона не в ньому
-                RT["last_sent"] = now_ts()
+            pass   # під час відключення станцію не чіпаємо: зміна режиму в автономній роботі її перезавантажує
+        elif action == "hold" and target_mode:
+            apply_hold()
+            RT["last_sent"] = now_ts()
+        elif action == "off" and target_mode:
+            apply_off()
+            RT["last_sent"] = now_ts()
     except Exception as e:
         log(f"Команда станції ({action}): {e}")
         return
@@ -1387,6 +1466,29 @@ def dump():
         time.sleep(0.5)
 
 
+def modetest():
+    """Перевірка, як станція переносить перемикання режимів. Тільки коли Є СВІТЛО і агент зупинений."""
+    print("Тест перемикання режимів. Роби його тільки коли Є СВІТЛО, агент має бути зупинений (sh stop.sh).")
+    t = read_station()
+    m0 = rpc("ES.GetMode", {"id": 0}).get("mode")
+    print(f"Зараз: режим {m0}, заряд {t.get('soc')}%, навантаження {t.get('load_w')} Вт, мережа {t.get('grid_w')} Вт")
+    input("Світло є і агент зупинений? Enter, щоб почати (Ctrl+C скасувати)... ")
+    print("\n1/3 Перемикаю в пасивний режим 0 Вт на 60 с. Стеж, чи не блимне світло.")
+    print("    відповідь станції:", set_passive(0, 60))
+    time.sleep(10)
+    print("    режим тепер:", rpc("ES.GetMode", {"id": 0}).get("mode"))
+    print("2/3 Чекаю 80 с, поки мине таймер пасивного режиму...")
+    time.sleep(80)
+    print("    режим після таймера:", rpc("ES.GetMode", {"id": 0}).get("mode"))
+    back = str(m0 or "").lower()
+    if back.startswith("ups") or back.startswith("auto"):
+        print(f"3/3 Повертаю режим {m0}. Знову стеж за світлом.")
+        print("    відповідь станції:", set_ups() if back.startswith("ups") else set_auto())
+        time.sleep(10)
+        print("    режим тепер:", rpc("ES.GetMode", {"id": 0}).get("mode"))
+    print("\nГотово. Скинь скрін і напиши, чи блимало світло або клацало реле на кроці 1, 2 чи 3.")
+
+
 if __name__ == "__main__":
     # Клавіатура Android часто міняє "--" на тире, тому приймаємо setup, -setup, --setup, —setup
     ARGS = [a.lstrip("-\u2014\u2013\u2012").lower() for a in sys.argv[1:]]
@@ -1403,5 +1505,7 @@ if __name__ == "__main__":
         diag()
     elif "dump" in ARGS:
         dump()
+    elif "modetest" in ARGS:
+        modetest()
     else:
         main()
