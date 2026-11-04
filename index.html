@@ -442,7 +442,7 @@ function render(){
 
   // батарея
   const soc = S.soc ?? 0;
-  $("soc").innerHTML = `${Math.round(soc)}<small>%</small>`;
+  $("soc").innerHTML = S.soc == null ? "-" : `${Math.round(soc)}<small>%</small>`;
   $("socBar").style.width = Math.min(100, soc) + "%";
   $("socBar").style.background = soc <= (S.settings?.low_soc_alert ?? 25) ? "var(--red)" : soc < 40 ? "var(--amber)" : "var(--green)";
   const tgt = S.decision && S.decision.target;
@@ -459,7 +459,7 @@ function render(){
   const temps = h24.map(p => p[4]).filter(x => x != null);
   $("temp").className = "big num t-" + (S.temp_level || "ok");
   $("temp").innerHTML = S.temp == null ? "-" : `${S.temp.toFixed(1)}<small>°C</small>`;
-  $("tempState").innerHTML = `<span class="pill ${tl[1]}">${tl[0]}</span>`;
+  $("tempState").innerHTML = S.temp == null ? "&nbsp;" : `<span class="pill ${tl[1]}">${tl[0]}</span>`;
   $("tempSub").textContent = temps.length ? `за добу ${Math.min(...temps).toFixed(0)}…${Math.max(...temps).toFixed(0)} °C · увага від ${S.settings.temp_warn} °C` : `увага від ${S.settings.temp_warn} °C`;
 
   // навантаження

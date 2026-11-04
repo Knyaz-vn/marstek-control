@@ -31,7 +31,9 @@ DEFAULTS = {
     "marstek_ip": "",
     "marstek_port": 30000,
     "local_port": 30000,
-    "udp_timeout": 5,
+    "udp_timeout": 8,
+    "udp_gap_sec": 3,
+    "bat_every_sec": 90,
 
     "capacity_wh": 5120,
     "min_soc": 12,
@@ -188,11 +190,18 @@ def fmt_dur(sec):
 _rpc_id = random.randint(1000, 90000)
 
 
-def rpc(method, params, timeout=None, retries=2):
+_last_req = [0.0]
+
+
+def rpc(method, params, timeout=None, retries=1):
+    """Запит до станції. Між запитами тримаємо паузу: часті запити по Wi-Fi вішають Open API."""
     global _rpc_id
-    timeout = timeout or float(CFG.get("udp_timeout", 5))
+    timeout = timeout or float(CFG.get("udp_timeout", 8))
     last_err = None
     for attempt in range(retries + 1):
+        wait = float(CFG.get("udp_gap_sec", 3)) - (time.time() - _last_req[0])
+        if wait > 0:
+            time.sleep(wait)
         _rpc_id += 1
         req = json.dumps({"id": _rpc_id, "method": method, "params": params}).encode()
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -203,6 +212,7 @@ def rpc(method, params, timeout=None, retries=2):
                 s.bind(("", int(CFG.get("local_port", 0))))
             except OSError:
                 s.bind(("", 0))
+            _last_req[0] = time.time()
             s.sendto(req, (CFG["marstek_ip"], int(CFG["marstek_port"])))
             deadline = time.time() + timeout
             while time.time() < deadline:
@@ -219,8 +229,8 @@ def rpc(method, params, timeout=None, retries=2):
             raise TimeoutError("немає відповіді")
         except Exception as e:
             last_err = e
-            time.sleep(0.6 + attempt)
         finally:
+            _last_req[0] = time.time()
             s.close()
     raise RuntimeError(f"{method}: {last_err}")
 
@@ -249,13 +259,17 @@ def read_station():
         es = rpc("ES.GetStatus", {"id": 0})
     except Exception as e:
         errors.append(str(e))
-    time.sleep(0.25)
-    try:
-        bat = rpc("Bat.GetStatus", {"id": 0})
-    except Exception as e:
-        errors.append(str(e))
+    bat_fresh = False
+    if not es or now_ts() - RT.get("bat_ts", 0) >= CFG["bat_every_sec"]:
+        try:
+            bat = rpc("Bat.GetStatus", {"id": 0})
+            RT["bat_ts"], RT["bat_last"], bat_fresh = now_ts(), bat, True
+        except Exception as e:
+            errors.append(str(e))
     if not es and not bat:
         raise RuntimeError("; ".join(errors))
+    if not bat_fresh:
+        bat = RT.get("bat_last") or {}
 
     t["soc"] = num(es.get("bat_soc"))
     if t["soc"] is None:
@@ -284,29 +298,28 @@ def read_station():
     t["rem_wh"] = num(bat.get("bat_capacity"))
     gi, go = num(es.get("total_grid_input_energy")), num(es.get("total_grid_output_energy"))
     t["grid_ctr"] = None if gi is None and go is None else (gi or 0) + (go or 0)
-    remember_remaining(t)
+    if bat_fresh:
+        remember_remaining(t)
     if t["bat_w"] is None:
         est = rem_trend(t["ts"], window=CFG["est_windows"][0])
         if est and est["span"] >= min(60, 0.5 * CFG["est_windows"][0]):
             t["bat_w"], t["bat_est"] = est["w"], True
 
     RT["sample_n"] += 1
-    if RT["sample_n"] % 5 == 1:
+    t["mode"] = RT["tele"].get("mode")
+    if now_ts() - RT.get("mode_ts", 0) >= 300:
+        RT["mode_ts"] = now_ts()
         try:
-            time.sleep(0.25)
             t["mode"] = rpc("ES.GetMode", {"id": 0}).get("mode")
         except Exception:
             pass
-    else:
-        t["mode"] = RT["tele"].get("mode")
-    if RT["sample_n"] % 20 == 1:
+    if now_ts() - RT.get("info_ts", 0) >= 1800:
+        RT["info_ts"] = now_ts()
         try:
-            time.sleep(0.25)
             t["rssi"] = rpc("Wifi.GetStatus", {"id": 0}).get("rssi")
         except Exception:
             pass
         try:
-            time.sleep(0.25)
             d = rpc("Marstek.GetDevice", {"ble_mac": "0"})
             t["device"], t["fw"] = d.get("device"), d.get("ver")
             mac = d.get("wifi_mac") or d.get("ble_mac")
@@ -623,7 +636,7 @@ def outage_evidence(t):
     if ctr is not None and prev is not None and ctr > prev:
         return "grid", None              # станція бере або віддає енергію в мережу
     load = max(t.get("load_w") or 0.0, 0.0)
-    thr = max(CFG["outage_detect_w"], 0.8 * load)   # під час відключення розряд не менший за навантаження
+    thr = max(CFG["outage_detect_w"], 0.9 * load)   # під час відключення розряд не менший за навантаження
     if t.get("bat_w") is not None and not t.get("bat_est"):
         bat = t["bat_w"]
         if bat > 50:
@@ -780,7 +793,7 @@ def sample_step():
     except Exception as e:
         RT["fail_count"] += 1
         log(f"Опитування станції: {e}")
-        if RT["fail_count"] >= 2 and now_ts() - RT.get("disc_ts", 0) > 300:
+        if RT["fail_count"] >= 3 and now_ts() - RT.get("disc_ts", 0) > 600:
             RT["disc_ts"] = now_ts()
             if rediscover():
                 return None
@@ -1124,7 +1137,8 @@ def main():
     while True:
         try:
             n = now_ts()
-            if n - RT["sample_ts"] >= CFG["sample_sec"]:
+            backoff = min(2 ** max(0, RT["fail_count"] - 1), 8) if RT["fail_count"] else 1
+            if n - RT["sample_ts"] >= CFG["sample_sec"] * backoff:   # станція мовчить: даємо їй оговтатись
                 RT["sample_ts"] = n
                 sample_step()
             if n - RT["control_ts"] >= CFG["control_sec"]:
