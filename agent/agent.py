@@ -35,7 +35,7 @@ DEFAULTS = {
     "local_port": 30000,
     "udp_timeout": 8,
     "udp_gap_sec": 3,
-    "bat_every_sec": 90,
+    "bat_every_sec": 300,
 
     "capacity_wh": 5120,
     "min_soc": 12,
@@ -69,8 +69,8 @@ DEFAULTS = {
     "low_soc_alert": 25,
     "default_load_w": 250,
     "outage_detect_w": 15,
-    "est_windows": [360, 900, 1800],
-    "grid_flat_sec": 600,
+    "est_windows": [900, 1800, 3600],
+    "grid_flat_sec": 900,
 
     "github_token": "",
     "gist_id": "",
@@ -271,7 +271,7 @@ def read_station():
     except Exception as e:
         errors.append(str(e))
     bat_fresh = False
-    if not es or now_ts() - RT.get("bat_ts", 0) >= CFG["bat_every_sec"]:
+    if now_ts() - RT.get("bat_ts", 0) >= CFG["bat_every_sec"]:   # рідко: часті запити батареї можуть скидати станцію
         try:
             bat = rpc("Bat.GetStatus", {"id": 0})
             RT["bat_ts"], RT["bat_last"], bat_fresh = now_ts(), bat, True
@@ -708,7 +708,7 @@ def outage_evidence(t):
                 and tr["last_up"] > reset + CFG["bat_every_sec"]
                 and t["ts"] - tr["last_up"] <= max(2.5 * CFG["bat_every_sec"], 120)):
             return "grid", None          # залишок щойно зріс: йде заряд від мережі
-        if not in_block and win < 900:
+        if win < (900 if in_block else 1800):
             continue
         if tr["down_steps"] < 3 or not tr["interval"] or tr["span"] < 0.7 * win:
             continue
