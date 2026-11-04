@@ -31,6 +31,7 @@ DEFAULTS = {
     "marstek_ip": "",
     "marstek_port": 30000,
     "local_port": 30000,
+    "udp_timeout": 5,
 
     "capacity_wh": 5120,
     "min_soc": 12,
@@ -186,8 +187,9 @@ def fmt_dur(sec):
 _rpc_id = random.randint(1000, 90000)
 
 
-def rpc(method, params, timeout=3.0, retries=2):
+def rpc(method, params, timeout=None, retries=2):
     global _rpc_id
+    timeout = timeout or float(CFG.get("udp_timeout", 5))
     last_err = None
     for attempt in range(retries + 1):
         _rpc_id += 1
@@ -208,7 +210,7 @@ def rpc(method, params, timeout=3.0, retries=2):
                     resp = json.loads(data.decode(errors="ignore"))
                 except ValueError:
                     continue
-                if resp.get("id") != _rpc_id:
+                if resp.get("id") != _rpc_id or "method" in resp:   # чужа відповідь або власне відлуння
                     continue
                 if "error" in resp:
                     raise RuntimeError(f"помилка станції {resp['error']}")
@@ -1170,6 +1172,60 @@ def selftest():
     print("\nУсе готово до запуску." if ok else "\nВиправ помилки вище.")
 
 
+def probe(ip, port, local_port, method, params, timeout=8):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.bind(("", local_port))
+            bound = s.getsockname()[1]
+        except OSError as e:
+            return f"не вдалося зайняти локальний порт {local_port}: {e}"
+        s.sendto(json.dumps({"id": 7, "method": method, "params": params}).encode(), (ip, port))
+        t0 = time.time()
+        while True:
+            data, addr = s.recvfrom(16384)
+            if b'"method"' not in data:   # пропускаємо власне відлуння
+                break
+        return f"OK за {time.time() - t0:.1f} с від {addr[0]}:{addr[1]} (локальний порт {bound}): {data.decode(errors='ignore')[:300]}"
+    except socket.timeout:
+        return "немає відповіді"
+    except Exception as e:
+        return f"помилка: {e}"
+    finally:
+        s.close()
+
+
+def diag():
+    ip, port = CFG.get("marstek_ip"), int(CFG.get("marstek_port", 30000))
+    print(f"Станція в налаштуваннях: {ip}:{port}")
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((ip or "192.168.31.1", 9))
+        print(f"IP планшета: {s.getsockname()[0]}")
+        s.close()
+    except Exception as e:
+        print(f"IP планшета: невідомо ({e})")
+    print("\n1. Пошук станцій широкомовним запитом...")
+    found = discover(port)
+    for f in found:
+        print(f"   знайдено {f['device']} fw {f['ver']} на {f['ip']} mac {f['mac']}")
+    if not found:
+        print("   нічого не знайдено")
+    n = 2
+    for p in sorted({port, 30000}):
+        for lp in (30000, 0):
+            print(f"\n{n}. Marstek.GetDevice на {ip}:{p}, локальний порт {lp or 'випадковий'}")
+            print("   " + probe(ip, p, lp, "Marstek.GetDevice", {"ble_mac": "0"}))
+            n += 1
+    print(f"\n{n}. ES.GetStatus на {ip}:{port}")
+    print("   " + probe(ip, port, 30000, "ES.GetStatus", {"id": 0}))
+    print(f"\n{n + 1}. Bat.GetStatus на {ip}:{port}")
+    print("   " + probe(ip, port, 30000, "Bat.GetStatus", {"id": 0}))
+    print("\nСкинь скрін цього результату.")
+
+
 if __name__ == "__main__":
     # Клавіатура Android часто міняє "--" на тире, тому приймаємо setup, -setup, --setup, —setup
     ARGS = [a.lstrip("-\u2014\u2013\u2012").lower() for a in sys.argv[1:]]
@@ -1177,5 +1233,7 @@ if __name__ == "__main__":
         setup()
     elif "test" in ARGS:
         selftest()
+    elif "diag" in ARGS:
+        diag()
     else:
         main()
