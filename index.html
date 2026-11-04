@@ -449,7 +449,8 @@ function render(){
   if (tgt != null && S.decision.action === "charge") { $("socMark").classList.remove("hidden"); $("socMark").style.left = `calc(${tgt}% - 1px)`; }
   else $("socMark").classList.add("hidden");
   const bw = S.bat_w;
-  const bstate = bw == null ? "" : bw > 20 ? `<b style="color:var(--green)">заряд +${fmtW(bw)} Вт</b>` : bw < -20 ? `<b style="color:var(--amber)">розряд ${fmtW(-bw)} Вт</b>` : "очікування";
+  const approx = S.bat_est ? "≈ " : "";
+  const bstate = bw == null ? "" : bw > 20 ? `<b style="color:var(--green)">заряд ${approx}+${fmtW(bw)} Вт</b>` : bw < -10 ? `<b style="color:var(--amber)">розряд ${approx}${fmtW(-bw)} Вт</b>` : "очікування";
   $("socSub").innerHTML = `${fmtW(usableWh(soc))} Вт·год доступно · ${bstate}`;
 
   // температура

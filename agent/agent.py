@@ -63,7 +63,8 @@ DEFAULTS = {
     "temp_repeat_min": 30,
     "low_soc_alert": 25,
     "default_load_w": 250,
-    "outage_detect_w": 40,
+    "outage_detect_w": 15,
+    "est_windows": [360, 900, 1800],
 
     "github_token": "",
     "gist_id": "",
@@ -270,6 +271,16 @@ def read_station():
         t["bat_raw"] = raw
     else:
         t["bat_w"] = None
+
+    # Залишок енергії і лічильники мережі: на прошивках без bat_power з них рахуємо потужність і відключення
+    t["rem_wh"] = num(bat.get("bat_capacity"))
+    gi, go = num(es.get("total_grid_input_energy")), num(es.get("total_grid_output_energy"))
+    t["grid_ctr"] = None if gi is None and go is None else (gi or 0) + (go or 0)
+    remember_remaining(t)
+    if t["bat_w"] is None:
+        est = rem_trend(t["ts"], window=CFG["est_windows"][0])
+        if est and est["span"] >= min(60, 0.5 * CFG["est_windows"][0]):
+            t["bat_w"], t["bat_est"] = est["w"], True
 
     RT["sample_n"] += 1
     if RT["sample_n"] % 5 == 1:
@@ -552,47 +563,135 @@ def check_temperature(t):
 
 
 # ---------------- Відключення і профіль споживання ----------------
-def track_outage(t):
-    bat = t.get("bat_w")
-    if bat is None:
+def remember_remaining(t):
+    if t.get("rem_wh") is None:
         return
-    discharge = -bat if bat < 0 else 0.0
-    load = t.get("load_w") or 0.0
-    thr = CFG["outage_detect_w"]
+    hist = RT.setdefault("rem_hist", [])
+    hist.append((t["ts"], t["rem_wh"]))
+    keep = max(CFG["est_windows"]) + 120
+    while hist and t["ts"] - hist[0][0] > keep:
+        hist.pop(0)
+
+
+def rem_trend(ts, window):
+    """Кроки зміни залишку Вт·год за останні window секунд і оцінка потужності батареї (Вт, + заряд)."""
+    pts = [p for p in RT.get("rem_hist", []) if ts - p[0] <= window]
+    if len(pts) < 2:
+        return None
+    span = pts[-1][0] - pts[0][0]
+    if span <= 0:
+        return None
+    steps = [(b[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]) if b[1] != a[1]]
+    downs = [(t0, -d) for t0, d in steps if d < 0]
+    ups = [(t0, d) for t0, d in steps if d > 0]
+    drop, rise = sum(d for _, d in downs), sum(d for _, d in ups)
+    w = (pts[-1][1] - pts[0][1]) / span * 3600
+    interval = None
+    # Потужність рахуємо між першим і останнім кроком: так точніше при грубій роздільності залишку
+    for seq, sign in ((downs, -1), (ups, 1)):
+        if len(seq) >= 2 and seq[-1][0] > seq[0][0]:
+            dur = seq[-1][0] - seq[0][0]
+            if sign < 0 and drop >= rise:
+                w, interval = -sum(d for _, d in seq[1:]) / dur * 3600, dur / (len(seq) - 1)
+            elif sign > 0 and rise > drop:
+                w, interval = sum(d for _, d in seq[1:]) / dur * 3600, dur / (len(seq) - 1)
+    return {"span": span, "w": round(w), "drop": drop, "rise": rise, "down_steps": len(downs),
+            "biggest": max((d for _, d in downs), default=0), "interval": interval,
+            "first_down": downs[0][0] if downs else None, "last_down": downs[-1][0] if downs else None}
+
+
+def last_down_ts():
+    hist = RT.get("rem_hist", [])
+    for a, b in zip(reversed(hist[:-1]), reversed(hist)):
+        if b[1] < a[1]:
+            return b[0]
+    return None
+
+
+def outage_evidence(t):
+    """'out' світла нема, 'grid' світло точно є, 'idle' батарея не розряджається, None невідомо."""
+    ctr, prev = t.get("grid_ctr"), RT.get("grid_ctr_prev")
+    RT["grid_ctr_prev"] = ctr
+    if ctr is not None and prev is not None and ctr > prev:
+        return "grid", None              # станція бере або віддає енергію в мережу
+    load = max(t.get("load_w") or 0.0, 0.0)
+    thr = max(CFG["outage_detect_w"], 0.8 * load)   # під час відключення розряд не менший за навантаження
+    if t.get("bat_w") is not None and not t.get("bat_est"):
+        bat = t["bat_w"]
+        if bat > 50:
+            return "grid", None
+        return ("out" if -bat >= thr else "idle"), None
+    for win in CFG["est_windows"]:
+        tr = rem_trend(t["ts"], win)
+        if not tr:
+            continue
+        if tr["rise"] >= 2 and tr["rise"] > tr["drop"]:
+            return "grid", None          # залишок росте: йде заряд від мережі
+        if tr["down_steps"] < 2 or not tr["interval"]:
+            continue
+        recent = t["ts"] - tr["last_down"] <= max(2.5 * tr["interval"], 90)
+        if (-tr["w"] >= thr and recent and tr["rise"] <= 0.3 * tr["drop"]
+                and tr["biggest"] <= 0.7 * tr["drop"]):
+            return "out", tr
+    return None, None
+
+
+def track_outage(t):
+    ev, tr = outage_evidence(t)
+    load = max(t.get("load_w") or 0.0, 0.0)
+    bat = t.get("bat_w")
+    discharge = -bat if bat is not None and bat < 0 else 0.0
     o = RT["outage"]
     if o is None:
-        if discharge > thr and discharge > 0.4 * max(load, 1):
+        if ev == "out" and tr is None:           # справжній bat_power: два відліки поспіль
             RT["out_cnt"] += 1
+        elif ev == "out":
+            RT["out_cnt"] = 2
         else:
             RT["out_cnt"] = 0
         if RT["out_cnt"] >= 2:
             soc = t.get("soc") or 0
-            RT["outage"] = {"start": int(t["ts"] - CFG["sample_sec"]), "wh": 0.0,
-                            "soc_start": soc, "last": t["ts"]}
+            start = (tr or {}).get("first_down") or (t["ts"] - CFG["sample_sec"])
+            if tr:
+                start -= tr["interval"]
+            RT["outage"] = {"start": int(start), "wh": 0.0, "soc_start": soc, "last": t["ts"],
+                            "interval": (tr or {}).get("interval")}
             RT["end_cnt"] = 0
             RT["low_soc_sent"] = False
-            alert("info", f"Світло зникло близько {fmt_t(RT['outage']['start'])}. Заряд {soc:.0f}%, "
-                          f"навантаження {max(load, discharge):.0f} Вт, вистачить приблизно на "
-                          f"{fmt_dur(usable_wh(soc) / max(load, discharge, 50) * 3600)}.")
+            w = max(load, discharge, 30)
+            alert("info", f"Світло зникло близько {fmt_t(start)}. Заряд {soc:.0f}%, навантаження {load:.0f} Вт, "
+                          f"вистачить приблизно на {fmt_dur(usable_wh(soc) / w * 3600)}.")
+        return
+
+    dt_h = max(0.0, min(t["ts"] - o["last"], 300)) / 3600
+    o["wh"] += max(load, discharge) * dt_h
+    o["last"] = t["ts"]
+    soc = t.get("soc") or 0
+    if not RT["low_soc_sent"] and soc <= CFG["low_soc_alert"]:
+        RT["low_soc_sent"] = True
+        alert("warn", f"Заряд батареї {soc:.0f}% під час відключення. Варто зменшити навантаження.")
+    end_ts = None
+    if ev == "grid":
+        end_ts = t["ts"]
+    elif o.get("interval"):
+        # оцінка за залишком: світло є, якщо залишок довго не зменшується
+        if ev == "out" and tr and tr.get("interval"):
+            o["interval"] = 0.7 * o["interval"] + 0.3 * tr["interval"]
+        o["last_down"] = last_down_ts() or o.get("last_down") or o["start"]
+        if t["ts"] - o["last_down"] > max(2.5 * o["interval"], 240):
+            end_ts = o["last_down"] + o["interval"] / 2
     else:
-        dt_h = max(0.0, min(t["ts"] - o["last"], 300)) / 3600
-        o["wh"] += max(load, discharge) * dt_h
-        o["last"] = t["ts"]
-        soc = t.get("soc") or 0
-        if not RT["low_soc_sent"] and soc <= CFG["low_soc_alert"]:
-            RT["low_soc_sent"] = True
-            alert("warn", f"Заряд батареї {soc:.0f}% під час відключення. Варто зменшити навантаження.")
-        if discharge < thr / 2:
-            RT["end_cnt"] += 1
-        else:
-            RT["end_cnt"] = 0
+        RT["end_cnt"] = RT["end_cnt"] + 1 if ev == "idle" else 0
         if RT["end_cnt"] >= 2:
-            rec = {"start": o["start"], "end": int(t["ts"]), "wh": round(o["wh"]),
-                   "soc_start": o["soc_start"], "soc_end": soc}
-            STATE["outages"] = (STATE["outages"] + [rec])[-30:]
-            RT["outage"] = None
-            alert("info", f"Світло повернулось о {fmt_t(rec['end'])}. Тривалість {fmt_dur(rec['end'] - rec['start'])}, "
-                          f"витрачено {rec['wh']} Вт·год, заряд {rec['soc_start']:.0f}% → {soc:.0f}%.")
+            end_ts = t["ts"] - CFG["sample_sec"]
+    if end_ts:
+        rec = {"start": o["start"], "end": int(end_ts), "wh": round(o["wh"]),
+               "soc_start": o["soc_start"], "soc_end": soc}
+        STATE["outages"] = (STATE["outages"] + [rec])[-30:]
+        RT["outage"] = None
+        RT["end_cnt"] = 0
+        alert("info", f"Світло повернулось близько {fmt_t(rec['end'])}. Тривалість {fmt_dur(rec['end'] - rec['start'])}, "
+                      f"витрачено {rec['wh']} Вт·год, заряд {rec['soc_start']:.0f}% → {soc:.0f}%.")
 
 
 def track_profile(t):
@@ -987,7 +1086,8 @@ def build_public_state():
         "v": VERSION, "updated": int(n),
         "online": RT["online"], "last_seen": int(RT["last_seen"]),
         "soc": t.get("soc"), "temp": t.get("temp"), "temp_level": STATE["temp_level"],
-        "bat_w": t.get("bat_w"), "load_w": t.get("load_w"), "grid_w": t.get("grid_w"),
+        "bat_w": t.get("bat_w"), "bat_est": bool(t.get("bat_est")), "rem_wh": t.get("rem_wh"),
+        "load_w": t.get("load_w"), "grid_w": t.get("grid_w"),
         "mode": t.get("mode"), "rssi": t.get("rssi"), "device": t.get("device"), "fw": t.get("fw"),
         "enabled": STATE["enabled"], "force_target": STATE.get("force_target"),
         "decision": RT["decision"],
