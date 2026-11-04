@@ -1481,12 +1481,28 @@ def modetest():
     time.sleep(80)
     print("    режим після таймера:", rpc("ES.GetMode", {"id": 0}).get("mode"))
     back = str(m0 or "").lower()
-    if back.startswith("ups") or back.startswith("auto"):
+    if back.startswith("manual"):
+        print("3/3 Станція була в режимі Manual (так API показує UPS з додатку). Поверни UPS у додатку.")
+    elif back.startswith("ups") or back.startswith("auto"):
         print(f"3/3 Повертаю режим {m0}. Знову стеж за світлом.")
         print("    відповідь станції:", set_ups() if back.startswith("ups") else set_auto())
         time.sleep(10)
         print("    режим тепер:", rpc("ES.GetMode", {"id": 0}).get("mode"))
     print("\nГотово. Скинь скрін і напиши, чи блимало світло або клацало реле на кроці 1, 2 чи 3.")
+
+
+def ups_cmd():
+    """Повернути станцію в UPS через API і перевірити, чи вона заряджається. Тільки коли є світло."""
+    before = rpc("ES.GetMode", {"id": 0}).get("mode")
+    print(f"Режим зараз: {before}. Надсилаю UPS...")
+    print("  відповідь станції:", set_ups())
+    time.sleep(20)
+    t = read_station()
+    after = rpc("ES.GetMode", {"id": 0}).get("mode")
+    grid = t.get("grid_w")
+    state = "заряджається від мережі" if grid is not None and grid < -50 else "не заряджається"
+    print(f"Режим після: {after}, заряд {t.get('soc')}%, мережа {grid} Вт ({state})")
+    print("Подивись, що показує додаток Marstek у «Режим роботи», і скинь скрін.")
 
 
 if __name__ == "__main__":
@@ -1507,5 +1523,7 @@ if __name__ == "__main__":
         dump()
     elif "modetest" in ARGS:
         modetest()
+    elif "ups" in ARGS:
+        ups_cmd()
     else:
         main()
