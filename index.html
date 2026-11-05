@@ -482,6 +482,7 @@ function render(){
   $("temp").className = "big num t-" + (S.temp_level || "ok");
   $("temp").innerHTML = S.temp == null ? "-" : `${S.temp.toFixed(1)}<small>°C</small>`;
   $("tempState").innerHTML = S.temp == null ? "&nbsp;" : `<span class="pill ${tl[1]}">${tl[0]}</span>`;
+  if (S.bat_age != null && S.bat_age > 900) { $("tempSub").textContent = `станція не віддає дані батареї вже ${dur(S.bat_age)}`; } else
   $("tempSub").textContent = temps.length ? `за добу ${Math.min(...temps).toFixed(0)}…${Math.max(...temps).toFixed(0)} °C · увага від ${S.settings.temp_warn} °C` : `увага від ${S.settings.temp_warn} °C`;
 
   // навантаження

@@ -219,10 +219,11 @@ def rpc(method, params, timeout=None, retries=1):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.settimeout(timeout)
         try:
+            # станція відповідає лише на порт 30000, тож випадковий порт марний (перевірено діагностикою)
             try:
-                s.bind(("", int(CFG.get("local_port", 0))))
-            except OSError:
-                s.bind(("", 0))
+                s.bind(("", int(CFG.get("local_port", 30000))))
+            except OSError as e:
+                raise RuntimeError(f"локальний порт {CFG.get('local_port', 30000)} зайнятий іншою програмою: {e}")
             _last_req[0] = time.time()
             s.sendto(req, (CFG["marstek_ip"], int(CFG["marstek_port"])))
             deadline = time.time() + timeout
@@ -271,12 +272,25 @@ def read_station():
     except Exception as e:
         errors.append(str(e))
     bat_fresh = False
-    if now_ts() - RT.get("bat_ts", 0) >= CFG["bat_every_sec"]:   # рідко: часті запити батареї можуть скидати станцію
+    due = now_ts() - RT.get("bat_try_ts", 0) >= CFG["bat_every_sec"] and now_ts() >= RT.get("bat_pause_until", 0)
+    if due:   # рідко: часті запити батареї можуть скидати станцію
+        RT["bat_try_ts"] = now_ts()
         try:
-            bat = rpc("Bat.GetStatus", {"id": 0})
+            bat = rpc("Bat.GetStatus", {"id": 0}, timeout=15, retries=0)
             RT["bat_ts"], RT["bat_last"], bat_fresh = now_ts(), bat, True
+            if RT.get("bat_fail", 0) >= 2:
+                archive_event("info", "Станція знову віддає дані батареї (температура, залишок)")
+            RT["bat_fail"] = 0
         except Exception as e:
-            errors.append(str(e))
+            RT["bat_fail"] = RT.get("bat_fail", 0) + 1
+            if RT["bat_fail"] == 2:
+                RT["bat_pause_until"] = now_ts() + 3600
+                archive_event("warn", "Станція не віддає дані батареї (температура, залишок енергії). "
+                                      "Агент не питатиме їх годину, щоб не перевантажувати станцію")
+            elif RT["bat_fail"] > 2:
+                RT["bat_pause_until"] = now_ts() + 3600
+            if not es:
+                errors.append(str(e))
     if not es and not bat:
         raise RuntimeError("; ".join(errors))
     if not bat_fresh:
@@ -1428,6 +1442,7 @@ def build_public_state():
         "online": RT["online"], "last_seen": int(RT["last_seen"]),
         "soc": t.get("soc"), "temp": t.get("temp"), "temp_level": STATE["temp_level"],
         "bat_w": t.get("bat_w"), "bat_est": bool(t.get("bat_est")), "rem_wh": t.get("rem_wh"),
+        "bat_age": int(n - RT["bat_ts"]) if RT.get("bat_ts") else None,
         "load_w": t.get("load_w"), "grid_w": t.get("grid_w"),
         "mode": t.get("mode"), "rssi": t.get("rssi"), "device": t.get("device"), "fw": t.get("fw"),
         "enabled": STATE["enabled"], "force_target": STATE.get("force_target"),
@@ -1751,6 +1766,27 @@ def cmdtest():
     print("\nГотово. Скинь скрін і напиши, чи було перезавантаження.")
 
 
+def battest():
+    """Чи відповідає станція на запит даних батареї і як швидко. Агент має бути зупинений."""
+    print("Перевірка Bat.GetStatus: 3 спроби з паузою 30 с, чекаю до 20 с кожну.")
+    for i in range(3):
+        t0 = time.time()
+        try:
+            r = rpc("Bat.GetStatus", {"id": 0}, timeout=20, retries=0)
+            print(f"  {i + 1}. OK за {time.time() - t0:.1f} с: заряд {r.get('soc')}%, температура {r.get('bat_temp')} °C, "
+                  f"залишок {r.get('bat_capacity')} Вт·год")
+        except Exception as e:
+            print(f"  {i + 1}. немає відповіді за {time.time() - t0:.0f} с ({e})")
+        try:
+            es = rpc("ES.GetStatus", {"id": 0}, timeout=8, retries=0)
+            print(f"     ES.GetStatus після цього: OK, заряд {es.get('bat_soc')}%")
+        except Exception as e:
+            print(f"     ES.GetStatus після цього: немає відповіді ({e})")
+        if i < 2:
+            time.sleep(30)
+    print("Скинь скрін результату.")
+
+
 if __name__ == "__main__":
     # Клавіатура Android часто міняє "--" на тире, тому приймаємо setup, -setup, --setup, —setup
     ARGS = [a.lstrip("-\u2014\u2013\u2012").lower() for a in sys.argv[1:]]
@@ -1771,8 +1807,10 @@ if __name__ == "__main__":
         modetest()
     elif "cmdtest" in ARGS:
         cmdtest()
+    elif "battest" in ARGS:
+        battest()
 
     elif ARGS and ARGS[0] not in ("run", "start"):
-        print("Невідома команда. Доступні: setup, test, diag, dump, modetest, cmdtest, on, off. Без команди запускається агент.")
+        print("Невідома команда. Доступні: setup, test, diag, dump, battest, modetest, cmdtest, on, off. Без команди запускається агент.")
     else:
         main()
