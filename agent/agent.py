@@ -214,6 +214,7 @@ def rpc(method, params, timeout=None, retries=1):
         if wait > 0:
             time.sleep(wait)
         _rpc_id += 1
+        last_err = None
         req = json.dumps({"id": _rpc_id, "method": method, "params": params}).encode()
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -242,9 +243,26 @@ def rpc(method, params, timeout=None, retries=1):
         except Exception as e:
             last_err = e
         finally:
+            note_req(method, last_err)
             _last_req[0] = time.time()
             s.close()
     raise RuntimeError(f"{method}: {last_err}")
+
+
+def note_req(method, err):
+    """Журнал останніх запитів: коли станція зникає, видно, що саме їй надіслали перед цим."""
+    log_ = RT.setdefault("req_log", [])
+    log_.append((_last_req[0], method, "ок" if err is None else ("тиша" if isinstance(err, TimeoutError) else "помилка"),
+                 round(time.time() - _last_req[0], 1)))
+    del log_[:-40]
+
+
+def req_before(ts):
+    """Останні запити до першого, на який станція не відповіла після моменту ts."""
+    rows = RT.get("req_log", [])
+    first = next((i for i, r in enumerate(rows) if r[0] >= ts and r[2] != "ок"), len(rows) - 1)
+    return "; ".join(f"{dt.datetime.fromtimestamp(r[0]):%H:%M:%S} {r[1]} {r[2]}"
+                     + (f" {r[3]} с" if r[2] == "ок" else "") for r in rows[max(0, first - 4):first + 1])
 
 
 def num(v):
@@ -333,30 +351,19 @@ def read_station():
 
     RT["sample_n"] += 1
     t["mode"] = RT["tele"].get("mode")
-    if now_ts() - RT.get("mode_ts", 0) >= 300:
+    # Лише запити, які станція переносить: загальний стан, батарея, режим. Wifi.GetStatus не надсилаємо зовсім:
+    # після нього прошивка 150 перезавантажувалась.
+    mode_every = 300 if STATE.get("enabled") else 1800
+    if now_ts() - RT.get("mode_ts", 0) >= mode_every:
         RT["mode_ts"] = now_ts()
         try:
             t["mode"] = rpc("ES.GetMode", {"id": 0}).get("mode")
             note_mode(t["mode"])
         except Exception:
             pass
-    if now_ts() - RT.get("info_ts", 0) >= 1800:
-        RT["info_ts"] = now_ts()
-        try:
-            t["rssi"] = rpc("Wifi.GetStatus", {"id": 0}).get("rssi")
-        except Exception:
-            pass
-        try:
-            d = rpc("Marstek.GetDevice", {"ble_mac": "0"})
-            t["device"], t["fw"] = d.get("device"), d.get("ver")
-            mac = d.get("wifi_mac") or d.get("ble_mac")
-            if mac and USER_CFG.get("marstek_mac") != mac:
-                USER_CFG["marstek_mac"] = mac
-                save_json(CFG_PATH, USER_CFG)
-                rebuild_cfg()
-        except Exception:
-            pass
-    for k in ("rssi", "device", "fw"):
+    if CFG.get("marstek_mac"):
+        t["device"], t["fw"] = USER_CFG.get("device_name", "VenusE 3.0"), USER_CFG.get("device_fw")
+    for k in ("device", "fw"):
         t.setdefault(k, RT["tele"].get(k))
     return t
 
@@ -1015,7 +1022,9 @@ def rediscover():
         log("Пошук станції в мережі: не знайдено")
         return False
     ip = match[0]["ip"]
+    USER_CFG["device_name"], USER_CFG["device_fw"] = match[0].get("device"), match[0].get("ver")
     if ip == CFG["marstek_ip"]:
+        save_json(CFG_PATH, USER_CFG)
         return False
     old = CFG["marstek_ip"]
     USER_CFG["marstek_ip"] = ip
@@ -1031,11 +1040,12 @@ def sample_step():
     except Exception as e:
         RT["fail_count"] += 1
         if RT["fail_count"] == 1:
-            RT["fail_since"] = now_ts()
+            RT["fail_since"] = RT.get("last_seen") or now_ts()
         log(f"Опитування станції: {e}")
         if RT["fail_count"] >= 2:
             switch_failed("станція перестала відповідати")
-        if RT["fail_count"] >= 3 and now_ts() - RT.get("disc_ts", 0) > 600:
+        # широкомовний пошук лише зрідка: після перезавантаження IP зазвичай той самий
+        if RT["fail_count"] >= 5 and now_ts() - RT.get("disc_ts", 0) > 1800:
             RT["disc_ts"] = now_ts()
             if rediscover():
                 return None
@@ -1049,8 +1059,11 @@ def sample_step():
         RT["grid_ok_ts"] = 0
         RT["grid_reset_ts"] = now_ts()
     if RT["fail_count"] >= 2 and RT.get("fail_since"):
+        before = req_before(RT["fail_since"])
         archive_event("offline", f"Станція не відповідала з {fmt_t(RT['fail_since'])} до {fmt_t(t['ts'])} "
-                                 f"({fmt_dur(t['ts'] - RT['fail_since'])}), можливе перезавантаження")
+                                 f"({fmt_dur(t['ts'] - RT['fail_since'])}), можливе перезавантаження"
+                                 + (f". Запити перед цим: {before}" if before else ""))
+        log(f"Станція зникала {fmt_dur(t['ts'] - RT['fail_since'])}. Запити перед цим: {before or 'немає'}")
     RT["online"], RT["fail_count"], RT["last_seen"] = True, 0, t["ts"]
     RT["tele"] = t
     calibrate_sign(t)
@@ -1568,6 +1581,7 @@ def setup():
     cfg["marstek_ip"] = ask("   IP станції", found[0]["ip"] if found else cfg.get("marstek_ip", ""))
     if found and found[0].get("mac"):
         cfg["marstek_mac"] = found[0]["mac"]
+        cfg["device_name"], cfg["device_fw"] = found[0].get("device"), found[0].get("ver")
     cfg["marstek_port"] = int(ask("   UDP порт Open API", cfg.get("marstek_port", 30000)))
     print("\n2. Графік відключень")
     cfg["queue"] = ask("   Твоя черга (наприклад 3.1)", cfg.get("queue", "3.1"))
